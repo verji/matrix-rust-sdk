@@ -740,6 +740,16 @@ impl OlmMachine {
         self.encrypt_room_event_raw(room_id, content, &event_type).await
     }
 
+    /// Send a message encrypted in olm
+    pub async fn encrypt_olm_room_event_raw(
+        &self,
+        room_id: &RoomId,
+        users: impl Iterator<Item = &UserId>,
+        content: impl MessageLikeEventContent,
+    ) -> OlmResult<Raw<RoomEncryptedEventContent>> {
+        self.group_session_manager.encrypt_olm_room(room_id, users, content).await
+    }
+
     /// Encrypt a json [`Value`] content for the given room.
     ///
     /// This method is equivalent to the [`OlmMachine::encrypt_room_event()`]
@@ -1305,6 +1315,7 @@ impl OlmMachine {
             RoomEventEncryptionScheme::MegolmV1AesSha2(c) => c.into(),
             #[cfg(feature = "experimental-algorithms")]
             RoomEventEncryptionScheme::MegolmV2AesSha2(c) => c.into(),
+            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(c) => c.into(),
             RoomEventEncryptionScheme::Unknown(_) => {
                 warn!("Received an encrypted room event with an unsupported algorithm");
                 return Err(EventError::UnsupportedAlgorithm.into());
@@ -2227,6 +2238,25 @@ pub(crate) mod tests {
             panic!("Wrong event type found {event:?}");
         }
     }
+
+
+    #[async_test]
+    async fn test_olm_room_encryption() {
+        let (alice, bob) = get_machine_pair_with_session().await;
+        let room_id = room_id!("!test:example.org");
+
+        let users = vec![alice.user_id(), bob.user_id()];
+
+        let plaintext = "Hi All";
+        let content = RoomMessageEventContent::text_plain(plaintext);
+        let msg = AnyMessageLikeEventContent::RoomMessage(content.clone());
+
+        let raw = alice.encrypt_olm_room_event_raw(room_id, users.into_iter(), msg).await.unwrap();
+
+        let js = serde_json::to_string(&raw).unwrap();
+        println!("THE MESSAGE IS {}", js);
+    }
+
 
     #[async_test]
     async fn test_room_key_sharing() {

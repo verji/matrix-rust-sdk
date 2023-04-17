@@ -23,18 +23,29 @@ use futures_util::future::join_all;
 use itertools::{Either, Itertools};
 use matrix_sdk_common::executor::spawn;
 use ruma::{
-    events::ToDeviceEventType, serde::Raw, to_device::DeviceIdOrAllDevices, DeviceId,
-    OwnedDeviceId, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, TransactionId, UserId,
+    events::{MessageLikeEventContent, ToDeviceEventType},
+    serde::Raw,
+    to_device::DeviceIdOrAllDevices,
+    DeviceId, OwnedDeviceId, OwnedRoomId, OwnedTransactionId, OwnedUserId, RoomId, TransactionId,
+    UserId,
 };
 use serde_json::Value;
 use tracing::{debug, error, info, instrument, trace};
+use vodozemac::olm::OlmMessage;
 
+use crate::types::events::room::encrypted::ToDeviceEncryptedEventContent::OlmV1Curve25519AesSha2;
 use crate::{
     error::{EventError, MegolmResult, OlmResult},
     identities::device::MaybeEncryptedRoomKey,
     olm::{Account, InboundGroupSession, OutboundGroupSession, Session, ShareInfo, ShareState},
     store::{Changes, Result as StoreResult, Store},
-    types::events::{room::encrypted::RoomEncryptedEventContent, room_key_withheld::WithheldCode},
+    types::events::{
+        room::encrypted::{
+            OlmV1Curve25519AesSha2Content, RoomEncryptedEventContent, RoomEventEncryptionScheme,
+            RoomOlmV1Curve25519AesSha2Content,
+        },
+        room_key_withheld::WithheldCode,
+    },
     Device, EncryptionSettings, OlmError, ToDeviceRequest,
 };
 
@@ -329,6 +340,76 @@ impl GroupSessionManager {
         );
 
         Ok((txn_id, request, share_infos, changed_sessions, withheld_devices))
+    }
+
+    pub async fn encrypt_olm_room(
+        &self,
+        room_id: &RoomId,
+        // encryption_settings: &EncryptionSettings,
+        users: impl Iterator<Item = &UserId>,
+        content: impl MessageLikeEventContent,
+    ) -> OlmResult<Raw<RoomEncryptedEventContent>> {
+    
+        // let CollectRecipientsResult { devices, .. } =
+        //     self.collect_session_recipients(users, &encryption_settings, &outbound).await?;
+
+        let mut devices: Vec<Device> = Default::default();
+        for user_id in users {
+            let user_devices = self.store.get_user_devices_filtered(user_id).await?;
+            // TODO filter blacklisted / trusted devices
+            devices.extend(user_devices.devices())
+        }
+
+        self.encrypt_event_for_devices(content, devices).await
+    }
+
+    async fn encrypt_event_for_devices(
+        &self,
+        // room_id: &RoomId,
+        content: impl MessageLikeEventContent,
+        devices: Vec<Device>,
+    ) -> OlmResult<Raw<RoomEncryptedEventContent>> {
+        let event_type = content.event_type().to_string();
+        let content = serde_json::to_value(&content)?;
+        let relates_to = content.get("m.relates_to").cloned();
+
+        let encrypt = |device: Device, event_type: String, content: Value| async move {
+            let (_, encryption_result) = device.encrypt(event_type.as_str(), content).await?;
+            Ok::<_, OlmError>(encryption_result)
+        };
+
+        let tasks: Vec<_> = devices
+            .iter()
+            .map(|d| spawn(encrypt(d.clone(), event_type.clone(), content.clone())))
+            .collect();
+
+        let mut recipient_map: BTreeMap<String, OlmMessage> = BTreeMap::default();
+        let results = join_all(tasks).await;
+
+        for result in results {
+            let result = result.expect("Encryption task panicked")?;
+            let de_re = result.deserialize().unwrap();
+            match de_re {
+                OlmV1Curve25519AesSha2(bx) => {
+                    let ciphertext = bx.ciphertext;
+                    let recipient_key = bx.recipient_key.to_base64();
+                    recipient_map.insert(recipient_key, ciphertext);
+                }
+                _ => {
+                    trace!("Unexpected scheme")
+                }
+            }
+        }
+        let dk = self.account.device_keys().await.curve25519_key().unwrap();
+        let room_ev =
+            RoomOlmV1Curve25519AesSha2Content { sender_key: dk, ciphertext: recipient_map };
+
+        let scheme = room_ev.into();
+        let content = RoomEncryptedEventContent { scheme, relates_to, other: Default::default() };
+
+        Ok(Raw::new(&content).expect("m.room.encrypted event content can always be serialized"))
+
+        // OlmResult::Err(OlmError::MissingSession)
     }
 
     /// Given a list of user and an outbound session, return the list of users

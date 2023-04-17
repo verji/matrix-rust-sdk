@@ -423,6 +423,7 @@ impl InboundGroupSession {
             RoomEventEncryptionScheme::Unknown(_) => {
                 return Err(EventError::UnsupportedAlgorithm.into());
             }
+            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) => todo!(),
         };
 
         let plaintext = String::from_utf8_lossy(&decrypted.plaintext);

@@ -60,6 +60,7 @@ impl EncryptedEvent {
                 }
                 .into(),
             ),
+            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) |
             RoomEventEncryptionScheme::Unknown(_) => None,
         }
     }
@@ -213,6 +214,8 @@ pub enum RoomEventEncryptionScheme {
     /// algorithm.
     #[cfg(feature = "experimental-algorithms")]
     MegolmV2AesSha2(MegolmV2AesSha2Content),
+    /// Legacy olm rooms
+    OlmV1Curve25519AesSha2(RoomOlmV1Curve25519AesSha2Content),
     /// An event content that was encrypted with an unknown encryption
     /// algorithm.
     Unknown(UnknownEncryptedContent),
@@ -229,6 +232,9 @@ impl RoomEventEncryptionScheme {
             RoomEventEncryptionScheme::MegolmV2AesSha2(_) => {
                 EventEncryptionAlgorithm::MegolmV2AesSha2
             }
+            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) => {
+                EventEncryptionAlgorithm::OlmV1Curve25519AesSha2
+            }
             RoomEventEncryptionScheme::Unknown(c) => c.algorithm.to_owned(),
         }
     }
@@ -236,6 +242,7 @@ impl RoomEventEncryptionScheme {
 
 pub(crate) enum SupportedEventEncryptionSchemes<'a> {
     MegolmV1AesSha2(&'a MegolmV1AesSha2Content),
+    OlmV1Curve25519AesSha2(&'a RoomOlmV1Curve25519AesSha2Content),
     #[cfg(feature = "experimental-algorithms")]
     MegolmV2AesSha2(&'a MegolmV2AesSha2Content),
 }
@@ -247,6 +254,7 @@ impl SupportedEventEncryptionSchemes<'_> {
             SupportedEventEncryptionSchemes::MegolmV1AesSha2(c) => &c.session_id,
             #[cfg(feature = "experimental-algorithms")]
             SupportedEventEncryptionSchemes::MegolmV2AesSha2(c) => &c.session_id,
+            SupportedEventEncryptionSchemes::OlmV1Curve25519AesSha2(_) => todo!(),
         }
     }
 }
@@ -254,6 +262,12 @@ impl SupportedEventEncryptionSchemes<'_> {
 impl<'a> From<&'a MegolmV1AesSha2Content> for SupportedEventEncryptionSchemes<'a> {
     fn from(c: &'a MegolmV1AesSha2Content) -> Self {
         Self::MegolmV1AesSha2(c)
+    }
+}
+
+impl<'a> From<&'a RoomOlmV1Curve25519AesSha2Content> for SupportedEventEncryptionSchemes<'a> {
+    fn from(c: &'a RoomOlmV1Curve25519AesSha2Content) -> Self {
+        Self::OlmV1Curve25519AesSha2(c)
     }
 }
 
@@ -280,6 +294,19 @@ pub struct MegolmV1AesSha2Content {
 
     /// The ID of the session used to encrypt the message.
     pub session_id: String,
+}
+
+/// The event content for room events encrypted with the m.olm.v1.curve25519-aes-sha2
+/// algorithm.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomOlmV1Curve25519AesSha2Content {
+
+    /// The Curve25519 key of the sender.
+    #[serde(deserialize_with = "deserialize_curve_key", serialize_with = "serialize_curve_key")]
+    pub sender_key: Curve25519PublicKey,
+
+    /// key is the Curve25519PublicKey of the recipient
+    pub ciphertext: BTreeMap<String, OlmMessage>,
 }
 
 /// The event content for events encrypted with the m.megolm.v2.aes-sha2
@@ -375,6 +402,7 @@ scheme_serialization!(
 scheme_serialization!(
     RoomEventEncryptionScheme,
     MegolmV1AesSha2 => MegolmV1AesSha2Content,
+    OlmV1Curve25519AesSha2 => RoomOlmV1Curve25519AesSha2Content,
 );
 
 #[cfg(feature = "experimental-algorithms")]
