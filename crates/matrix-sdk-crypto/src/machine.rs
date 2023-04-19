@@ -1385,6 +1385,9 @@ impl OlmMachine {
             RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(c) => {
                 self.decrypt_olm_events(room_id, &event, &c).await
             }
+            RoomEventEncryptionScheme::OlmCurve25519AesSha2Protobuf(_c) => {
+                todo!()
+            }
             RoomEventEncryptionScheme::Unknown(_) => {
                 warn!("Received an encrypted room event with an unsupported algorithm");
                 Err(EventError::UnsupportedAlgorithm.into())

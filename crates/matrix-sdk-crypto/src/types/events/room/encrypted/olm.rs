@@ -20,6 +20,10 @@ pub struct OlmV1Curve25519AesSha2Content {
     pub sender_key: Curve25519PublicKey,
 }
 
+/// The event content for the experimental org.matrix.olm.curve25519-aes-sha2-protobuf algorithm.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize, Serialize)]
+pub struct OlmCurve25519AesSha2ProtobufContent {}
+
 /// The event content for events encrypted with the m.olm.v2.curve25519-aes-sha2
 /// algorithm.
 #[cfg(feature = "experimental-algorithms")]

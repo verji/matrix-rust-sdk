@@ -422,7 +422,8 @@ impl InboundGroupSession {
             RoomEventEncryptionScheme::Unknown(_) => {
                 return Err(EventError::UnsupportedAlgorithm.into());
             }
-            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) => {
+            RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_)
+            | RoomEventEncryptionScheme::OlmCurve25519AesSha2Protobuf(_) => {
                 // TODO: Should this be unreachable instead?
                 return Err(EventError::UnsupportedAlgorithm.into());
             }

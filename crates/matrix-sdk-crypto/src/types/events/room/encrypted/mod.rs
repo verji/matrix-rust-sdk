@@ -35,7 +35,10 @@ use crate::{
     EventError, MegolmError,
 };
 
-pub use self::{megolm::MegolmV1AesSha2Content, olm::OlmV1Curve25519AesSha2Content};
+pub use self::{
+    megolm::MegolmV1AesSha2Content,
+    olm::{OlmCurve25519AesSha2ProtobufContent, OlmV1Curve25519AesSha2Content},
+};
 #[cfg(feature = "experimental-algorithms")]
 pub use self::{megolm::MegolmV2AesSha2Content, olm::OlmV2Curve25519AesSha2Content};
 
@@ -69,6 +72,7 @@ impl EncryptedEvent {
                 .into(),
             ),
             RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) => None,
+            RoomEventEncryptionScheme::OlmCurve25519AesSha2Protobuf(_) => None,
             RoomEventEncryptionScheme::Unknown(_) => None,
         }
     }
@@ -203,6 +207,9 @@ pub enum RoomEventEncryptionScheme {
     /// The event content for events encrypted with the
     /// m.olm.v1.curve25519-aes-sha2 algorithm.
     OlmV1Curve25519AesSha2(OlmV1Curve25519AesSha2Content),
+    /// The event content for the experimental org.matrix.olm.curve25519-aes-sha2-protobuf
+    /// algorithm.
+    OlmCurve25519AesSha2Protobuf(OlmCurve25519AesSha2ProtobufContent),
     /// An event content that was encrypted with an unknown encryption
     /// algorithm.
     Unknown(UnknownEncryptedContent),
@@ -222,6 +229,10 @@ impl RoomEventEncryptionScheme {
             RoomEventEncryptionScheme::OlmV1Curve25519AesSha2(_) => {
                 EventEncryptionAlgorithm::OlmV1Curve25519AesSha2
             }
+            RoomEventEncryptionScheme::OlmCurve25519AesSha2Protobuf(_) => {
+                EventEncryptionAlgorithm::OlmCurve25519AesSha2Protobuf
+            }
+
             RoomEventEncryptionScheme::Unknown(c) => c.algorithm.to_owned(),
         }
     }
@@ -333,6 +344,7 @@ scheme_serialization!(
     MegolmV1AesSha2 => MegolmV1AesSha2Content,
     MegolmV2AesSha2 => MegolmV2AesSha2Content,
     OlmV1Curve25519AesSha2 => OlmV1Curve25519AesSha2Content,
+    OlmCurve25519AesSha2Protobuf => OlmCurve25519AesSha2ProtobufContent,
 );
 
 #[cfg(not(feature = "experimental-algorithms"))]
@@ -340,6 +352,7 @@ scheme_serialization!(
     RoomEventEncryptionScheme,
     MegolmV1AesSha2 => MegolmV1AesSha2Content,
     OlmV1Curve25519AesSha2 => OlmV1Curve25519AesSha2Content,
+    OlmCurve25519AesSha2Protobuf => OlmCurve25519AesSha2ProtobufContent,
 );
 
 #[cfg(feature = "experimental-algorithms")]

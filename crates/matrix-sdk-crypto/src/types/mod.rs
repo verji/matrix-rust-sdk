@@ -347,6 +347,10 @@ pub enum EventEncryptionAlgorithm {
     #[ruma_enum(rename = "m.olm.v2.curve25519-aes-sha2")]
     OlmV2Curve25519AesSha2,
 
+    /// Experimental algorithm that uses protobuf behind the scenes.
+    #[ruma_enum(rename = "org.matrix.olm.curve25519-aes-sha2-protobuf")]
+    OlmCurve25519AesSha2Protobuf,
+
     /// Megolm version 1 using AES-256 and SHA-256.
     #[ruma_enum(rename = "m.megolm.v1.aes-sha2")]
     MegolmV1AesSha2,
