@@ -20,7 +20,7 @@ fn init_logging() {
     tracing_subscriber::registry()
         .with(
             tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(Level::TRACE.into())
+                .with_default_directive(Level::DEBUG.into())
                 .from_env()
                 .unwrap(),
         )
@@ -48,6 +48,7 @@ pub async fn get_client_for_user(username: String, use_sqlite_store: bool) -> Re
 
     let client_builder = Client::builder()
         .user_agent("matrix-sdk-integation-tests")
+        .proxy("http://localhost:8084")
         .homeserver_url(homeserver_url)
         .request_config(RequestConfig::short_retry());
     let client = if use_sqlite_store {

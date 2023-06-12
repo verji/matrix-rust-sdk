@@ -37,12 +37,12 @@ rc_login:
  address:
    per_second: 1000
    burst_count: 1000
-#  account:
-#    per_second: 0.17
-#    burst_count: 3
-#  failed_attempts:
-#    per_second: 0.17
-#    burst_count: 3
+ account:
+   per_second: 1000
+   burst_count: 1000
+ failed_attempts:
+   per_second: 1000
+   burst_count: 1000
 
 """ >>  /data/homeserver.yaml
 
