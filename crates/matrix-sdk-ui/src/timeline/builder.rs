@@ -20,10 +20,15 @@ use matrix_sdk::{
     room,
 };
 use ruma::{
-    events::receipt::{ReceiptThread, ReceiptType, SyncReceiptEvent},
+    events::{
+        receipt::{ReceiptThread, ReceiptType, SyncReceiptEvent},
+        AnySyncTimelineEvent,
+    },
     push::Action,
+    serde::Raw,
 };
 use tokio::sync::Mutex;
+use tracing::debug;
 use tracing::error;
 
 #[cfg(feature = "e2e-encryption")]
@@ -126,9 +131,13 @@ impl TimelineBuilder {
 
         let timeline_event_handle = room.add_event_handler({
             let inner = inner.clone();
-            move |event, encryption_info: Option<EncryptionInfo>, push_actions: Vec<Action>| {
+            move |event: Raw<AnySyncTimelineEvent>,
+                  encryption_info: Option<EncryptionInfo>,
+                  push_actions: Vec<Action>| {
                 let inner = inner.clone();
                 async move {
+                    debug!("TIMELINE: handle live event:");
+                    dbg!(event.clone());
                     inner.handle_live_event(event, encryption_info, push_actions).await;
                 }
             }

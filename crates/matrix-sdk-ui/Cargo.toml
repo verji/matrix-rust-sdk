@@ -10,6 +10,7 @@ e2e-encryption = ["matrix-sdk/e2e-encryption"]
 
 native-tls = ["matrix-sdk/native-tls"]
 rustls-tls = ["matrix-sdk/rustls-tls"]
+testing = []
 
 experimental-sliding-sync = ["matrix-sdk/experimental-sliding-sync"]
 

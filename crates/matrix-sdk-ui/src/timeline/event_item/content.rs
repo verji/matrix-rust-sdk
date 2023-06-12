@@ -391,6 +391,13 @@ impl ReactionGroup {
     pub fn senders(&self) -> impl Iterator<Item = &UserId> {
         self.values().map(AsRef::as_ref)
     }
+
+    pub fn user_reaction(
+        &self,
+        user_id: &UserId,
+    ) -> Option<&(Option<OwnedTransactionId>, Option<OwnedEventId>)> {
+        self.0.iter().find(|(_, value)| **value == *user_id).map(|(key, _)| key)
+    }
 }
 
 impl Deref for ReactionGroup {

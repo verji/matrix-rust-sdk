@@ -34,6 +34,7 @@ use ruma::{
         fully_read::FullyReadEvent,
         receipt::{Receipt, ReceiptEventContent, ReceiptThread, ReceiptType},
         relation::Annotation,
+        room::redaction::RoomRedactionEventContent,
         AnyMessageLikeEventContent, AnySyncTimelineEvent,
     },
     push::{Action, PushConditionRoomCtx, Ruleset},
@@ -223,6 +224,43 @@ impl<P: RoomDataProvider> TimelineInner<P> {
             .handle_event(kind);
     }
 
+    /// Handle a local redaction.
+    #[instrument(skip_all)]
+    pub(super) async fn handle_local_redaction(
+        &self,
+        event_id: OwnedEventId,
+        txn_id: OwnedTransactionId,
+        reason: Option<String>,
+    ) {
+        let sender = self.room_data_provider.own_user_id().to_owned();
+        let sender_profile = self.room_data_provider.profile(&sender).await;
+        let event_meta = TimelineEventMetadata {
+            sender,
+            sender_profile,
+            timestamp: MilliSecondsSinceUnixEpoch::now(),
+            is_own_event: true,
+            // FIXME: Should we supply something here for encrypted rooms?
+            encryption_info: None,
+            read_receipts: Default::default(),
+            // An event sent by ourself is never matched against push rules.
+            is_highlighted: false,
+        };
+
+        let flow = Flow::Local { txn_id };
+
+        let kind = TimelineEventKind::Redaction {
+            redacts: event_id,
+            content: match reason {
+                Some(reason) => RoomRedactionEventContent::with_reason(reason),
+                None => RoomRedactionEventContent::new(),
+            },
+        };
+
+        let mut state = self.state.lock().await;
+        TimelineEventHandler::new(event_meta, flow, &mut state, self.track_read_receipts)
+            .handle_event(kind);
+    }
+
     /// Update the send state of a local event represented by a transaction ID.
     ///
     /// If no local event is found, a warning is raised.
@@ -265,6 +303,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         }
 
         let new_item = TimelineItem::Event(item.with_kind(local_item.with_send_state(send_state)));
+        dbg!(new_item.clone());
         state.items.set(idx, Arc::new(new_item));
     }
 

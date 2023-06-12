@@ -65,10 +65,10 @@ use self::inner::{TimelineInner, TimelineInnerState};
 pub use self::sliding_sync_ext::SlidingSyncRoomExt;
 pub use self::{
     event_item::{
-        AnyOtherFullStateEventContent, BundledReactions, EncryptedMessage, EventSendState,
-        EventTimelineItem, InReplyToDetails, MemberProfileChange, MembershipChange, Message,
-        OtherState, Profile, ReactionGroup, RepliedToEvent, RoomMembershipChange, Sticker,
-        TimelineDetails, TimelineItemContent,
+        AnyOtherFullStateEventContent, EncryptedMessage, EventSendState, EventTimelineItem,
+        InReplyToDetails, MemberProfileChange, MembershipChange, Message, OtherState, Profile,
+        ReactionGroup, RepliedToEvent, RoomMembershipChange, Sticker, TimelineDetails,
+        TimelineItemContent,
     },
     pagination::{PaginationOptions, PaginationOutcome},
     room_ext::RoomExt,
@@ -277,6 +277,7 @@ impl Timeline {
         let txn_id = txn_id.map_or_else(TransactionId::new, ToOwned::to_owned);
         self.inner.handle_local_event(txn_id.clone(), content.clone()).await;
 
+        // TODO: Debounce reactions
         let send_state = match Room::from(self.room().clone()) {
             Room::Joined(room) => {
                 let response = room.send(content, Some(&txn_id)).await;
@@ -294,7 +295,40 @@ impl Timeline {
             }
         };
 
+        // TODO: Do something with the response; fix the local echo if needed
         self.inner.update_event_send_state(&txn_id, send_state).await;
+    }
+
+    pub async fn redact(
+        &self,
+        event_id: &OwnedEventId,
+        txn_id: Option<&TransactionId>,
+        reason: Option<&str>,
+    ) {
+        let txn_id = txn_id.map_or_else(TransactionId::new, ToOwned::to_owned);
+        self.inner
+            .handle_local_redaction(event_id.clone(), txn_id.clone(), reason.map(|s| s.into()))
+            .await;
+
+        // TODO: Debounce reactions
+        let _send_state = match Room::from(self.room().clone()) {
+            Room::Joined(room) => {
+                let response = room.redact(event_id, reason.to_owned(), Some(txn_id)).await;
+
+                match response {
+                    Ok(response) => EventSendState::Sent { event_id: response.event_id },
+                    Err(error) => EventSendState::SendingFailed { error: Arc::new(error.into()) },
+                }
+            }
+            _ => {
+                EventSendState::SendingFailed {
+                    // FIXME: Probably not exactly right
+                    error: Arc::new(matrix_sdk::Error::InconsistentState),
+                }
+            }
+        };
+
+        // TODO: Do something with the response; fix the local echo if needed
     }
 
     /// Sends an attachment to the room. It does not currently support local

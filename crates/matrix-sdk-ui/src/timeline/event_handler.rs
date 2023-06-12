@@ -415,6 +415,10 @@ impl<'a> TimelineEventHandler<'a> {
         };
 
         if let Some((idx, event_item)) = rfind_event_by_id(self.items, event_id) {
+            // NOTE: It may simplify things to allow reactions only on
+            //  remote echoed events however, it's technically possible
+            //  to react on any event that we know the event ID of.
+            //  The event ID is received after the event is first sent.
             let Some(remote_event_item) = event_item.as_remote() else {
                 error!("inconsistent state: reaction received on a non-remote event item");
                 return;

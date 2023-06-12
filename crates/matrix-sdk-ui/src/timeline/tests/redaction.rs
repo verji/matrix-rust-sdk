@@ -44,6 +44,7 @@ async fn reaction_redaction() {
     let item =
         assert_matches!(stream.next().await, Some(VectorDiff::Set { index: 1, value }) => value);
     let event = item.as_event().unwrap();
+
     assert_eq!(event.reactions().len(), 1);
 
     // TODO: After adding raw timeline items, check for one here
