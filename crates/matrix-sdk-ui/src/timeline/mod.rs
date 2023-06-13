@@ -277,7 +277,6 @@ impl Timeline {
         let txn_id = txn_id.map_or_else(TransactionId::new, ToOwned::to_owned);
         self.inner.handle_local_event(txn_id.clone(), content.clone()).await;
 
-        // TODO: Debounce reactions
         let send_state = match Room::from(self.room().clone()) {
             Room::Joined(room) => {
                 let response = room.send(content, Some(&txn_id)).await;
@@ -295,8 +294,41 @@ impl Timeline {
             }
         };
 
-        // TODO: Do something with the response; fix the local echo if needed
         self.inner.update_event_send_state(&txn_id, send_state).await;
+    }
+
+    /// Returns immediately after updating the local echo
+    /// Executes the remote request in the background
+    pub async fn send_later(
+        &self,
+        content: AnyMessageLikeEventContent,
+        txn_id: Option<&TransactionId>,
+    ) {
+        let txn_id = txn_id.map_or_else(TransactionId::new, ToOwned::to_owned);
+        self.inner.handle_local_event(txn_id.clone(), content.clone()).await;
+
+        // TODO: Debounce reactions
+        // TODO: Do this sending in the background
+        // TODO: Wait for any ongoing requests to finish
+        // TODO: Cancel any requests queued to retry
+        let send_state = match Room::from(self.room().clone()) {
+            Room::Joined(room) => {
+                let response = room.send(content, Some(&txn_id)).await;
+
+                match response {
+                    Ok(response) => EventSendState::Sent { event_id: response.event_id },
+                    Err(error) => EventSendState::SendingFailed { error: Arc::new(error) },
+                }
+            }
+            _ => {
+                EventSendState::SendingFailed {
+                    // FIXME: Probably not exactly right
+                    error: Arc::new(matrix_sdk::Error::InconsistentState),
+                }
+            }
+        };
+
+        // TODO: Do something with the response; retry if needed
     }
 
     pub async fn redact(
