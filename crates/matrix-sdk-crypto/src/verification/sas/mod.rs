@@ -537,7 +537,7 @@ impl Sas {
         if done {
             match self.mark_as_done().await? {
                 VerificationResult::Cancel(c) => {
-                    Ok((self.cancel_with_code(c).into_iter().collect(), None))
+                    Ok((self.cancel_with_code(c).await.into_iter().collect(), None))
                 }
                 VerificationResult::Ok => Ok((mac_requests, None)),
                 VerificationResult::SignatureUpload(r) => Ok((mac_requests, Some(r))),
@@ -559,8 +559,8 @@ impl Sas {
     ///
     /// Returns None if the `Sas` object is already in a canceled state,
     /// otherwise it returns a request that needs to be sent out.
-    pub fn cancel(&self) -> Option<OutgoingVerificationRequest> {
-        self.cancel_with_code(CancelCode::User)
+    pub async fn cancel(&self) -> Option<OutgoingVerificationRequest> {
+        self.cancel_with_code(CancelCode::User).await
     }
 
     /// Cancel the verification.
@@ -576,12 +576,12 @@ impl Sas {
     /// otherwise it returns a request that needs to be sent out.
     ///
     /// [`cancel()`]: #method.cancel
-    pub fn cancel_with_code(&self, code: CancelCode) -> Option<OutgoingVerificationRequest> {
+    pub async fn cancel_with_code(&self, code: CancelCode) -> Option<OutgoingVerificationRequest> {
         let content = {
             let mut guard = self.inner.write();
 
             if let Some(request) = &self.request_handle {
-                request.cancel_with_code(&code);
+                request.cancel_with_code(&code).await;
             }
 
             let sas: InnerSas = (*guard).clone();
@@ -599,11 +599,11 @@ impl Sas {
         content
     }
 
-    pub(crate) fn cancel_if_timed_out(&self) -> Option<OutgoingVerificationRequest> {
+    pub(crate) async fn cancel_if_timed_out(&self) -> Option<OutgoingVerificationRequest> {
         if self.is_cancelled() || self.is_done() {
             None
         } else if self.timed_out() {
-            self.cancel_with_code(CancelCode::Timeout)
+            self.cancel_with_code(CancelCode::Timeout).await
         } else {
             None
         }

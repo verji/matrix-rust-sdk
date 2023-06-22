@@ -95,7 +95,7 @@ impl SasVerification {
     /// Cancel the interactive verification flow because the short auth strings
     /// didn't match on both sides.
     pub async fn mismatch(&self) -> Result<()> {
-        if let Some(request) = self.inner.cancel_with_code(CancelCode::MismatchedSas) {
+        if let Some(request) = self.inner.cancel_with_code(CancelCode::MismatchedSas).await {
             self.client.send_verification_request(request).await?;
         }
 
@@ -104,7 +104,7 @@ impl SasVerification {
 
     /// Cancel the interactive verification flow.
     pub async fn cancel(&self) -> Result<()> {
-        if let Some(request) = self.inner.cancel() {
+        if let Some(request) = self.inner.cancel().await {
             self.client.send_verification_request(request).await?;
         }
 

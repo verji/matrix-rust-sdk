@@ -19,6 +19,7 @@ use std::{
 };
 
 use dashmap::DashMap;
+use futures_util::{stream, StreamExt};
 use ruma::{
     events::{
         key::verification::VerificationMethod, AnyToDeviceEvent, AnyToDeviceEventContent,
@@ -91,9 +92,9 @@ impl VerificationMachine {
             methods,
         );
 
-        self.insert_request(verification.clone());
+        self.insert_request(verification.clone()).await;
 
-        let request = verification.request_to_device();
+        let request = verification.request_to_device().await;
 
         (verification, request.into())
     }
@@ -116,7 +117,7 @@ impl VerificationMachine {
             methods,
         );
 
-        self.insert_request(request.clone());
+        self.insert_request(request.clone()).await;
 
         request
     }
@@ -140,7 +141,7 @@ impl VerificationMachine {
                     TransactionId::new(),
                 );
 
-                self.verifications.insert_sas(sas.clone());
+                self.verifications.insert_sas(sas.clone()).await;
 
                 request.into()
             }
@@ -167,7 +168,7 @@ impl VerificationMachine {
     /// Add a new `VerificationRequest` object to the cache.
     /// If there are any existing requests with this user (and different
     /// flow_id), both the existing and new request will be cancelled.
-    fn insert_request(&self, request: VerificationRequest) {
+    async fn insert_request(&self, request: VerificationRequest) {
         if let Some(r) = self.get_request(request.other_user(), request.flow_id().as_str()) {
             debug!(flow_id = r.flow_id().as_str(), "Ignoring known verification request",);
             return;
@@ -180,17 +181,17 @@ impl VerificationMachine {
         // have for this user if someone tries to have two verifications going
         // on at once.
         for old_verification in user_requests.values_mut() {
-            if !old_verification.is_cancelled() {
+            if !old_verification.is_cancelled().await {
                 warn!(
                     "Received a new verification request whilst another request \
                     with the same user is ongoing. Cancelling both requests."
                 );
 
-                if let Some(r) = old_verification.cancel() {
+                if let Some(r) = old_verification.cancel().await {
                     self.verifications.add_request(r.into())
                 }
 
-                if let Some(r) = request.cancel() {
+                if let Some(r) = request.cancel().await {
                     self.verifications.add_request(r.into())
                 }
             }
@@ -242,25 +243,39 @@ impl VerificationMachine {
         self.verifications.outgoing_requests()
     }
 
-    pub fn garbage_collect(&self) -> Vec<Raw<AnyToDeviceEvent>> {
+    pub async fn garbage_collect(&self) -> Vec<Raw<AnyToDeviceEvent>> {
         let mut events = vec![];
 
         for mut user_verification in self.requests.iter_mut() {
-            user_verification.retain(|_, v| !(v.is_done() || v.is_cancelled()));
+            // Can't use retain because we need to await for filtering
+            let mut keys_to_remove = Vec::new();
+            for (k, v) in user_verification.iter() {
+                if v.is_done().await || v.is_cancelled().await {
+                    keys_to_remove.push(k.to_owned());
+                }
+            }
+
+            for k in keys_to_remove {
+                user_verification.remove(&k);
+            }
         }
         self.requests.retain(|_, v| !v.is_empty());
 
-        let mut requests: Vec<OutgoingVerificationRequest> = self
-            .requests
-            .iter()
-            .flat_map(|v| {
-                let requests: Vec<OutgoingVerificationRequest> =
-                    v.value().iter().filter_map(|(_, v)| v.cancel_if_timed_out()).collect();
-                requests
+        let mut requests: Vec<OutgoingVerificationRequest> = stream::iter(self.requests.iter())
+            .then(|v| async move {
+                let mut reqs = Vec::new();
+                for v in v.values() {
+                    if let Some(req) = v.cancel_if_timed_out().await {
+                        reqs.push(req);
+                    }
+                }
+                stream::iter(reqs)
             })
-            .collect();
+            .flatten()
+            .collect()
+            .await;
 
-        requests.extend(self.verifications.garbage_collect());
+        requests.extend(self.verifications.garbage_collect().await);
 
         for request in requests {
             if let Ok(OutgoingContent::ToDevice(AnyToDeviceEventContent::KeyVerificationCancel(
@@ -294,7 +309,7 @@ impl VerificationMachine {
                 }
             }
             VerificationResult::Cancel(c) => {
-                if let Some(r) = sas.cancel_with_code(c) {
+                if let Some(r) = sas.cancel_with_code(c).await {
                     self.verifications.add_request(r.into());
                 }
             }
@@ -381,11 +396,11 @@ impl VerificationMachine {
                     r,
                 );
 
-                self.insert_request(request);
+                self.insert_request(request).await;
             }
             AnyVerificationContent::Cancel(c) => {
                 if let Some(verification) = self.get_request(event.sender(), flow_id.as_str()) {
-                    verification.receive_cancel(event.sender(), c);
+                    verification.receive_cancel(event.sender(), c).await;
                 }
 
                 if let Some(verification) = self.get_verification(event.sender(), flow_id.as_str())
@@ -406,7 +421,7 @@ impl VerificationMachine {
                 };
 
                 if request.flow_id() == &flow_id {
-                    request.receive_ready(event.sender(), c);
+                    request.receive_ready(event.sender(), c).await;
                 } else {
                     flow_id_mismatch();
                 }
@@ -428,7 +443,7 @@ impl VerificationMachine {
 
                         match Sas::from_start_event(flow_id, c, identities, None, false) {
                             Ok(sas) => {
-                                self.verifications.insert_sas(sas);
+                                self.verifications.insert_sas(sas).await;
                             }
                             Err(cancellation) => self.queue_up_content(
                                 event.sender(),
@@ -491,7 +506,7 @@ impl VerificationMachine {
             }
             AnyVerificationContent::Done(c) => {
                 if let Some(verification) = self.get_request(event.sender(), flow_id.as_str()) {
-                    verification.receive_done(event.sender(), c);
+                    verification.receive_done(event.sender(), c).await;
                 }
 
                 #[allow(clippy::single_match)]
@@ -656,9 +671,9 @@ mod tests {
         alice.set_creation_time(Instant::now() - Duration::from_secs(60 * 15));
         assert!(alice.timed_out());
         assert!(alice_machine.verifications.outgoing_requests().is_empty());
-        alice_machine.garbage_collect();
+        alice_machine.garbage_collect().await;
         assert!(!alice_machine.verifications.outgoing_requests().is_empty());
-        alice_machine.garbage_collect();
+        alice_machine.garbage_collect().await;
         assert!(alice_machine.verifications.is_empty());
     }
 
@@ -722,7 +737,7 @@ mod tests {
             None,
         );
 
-        let request = bob_request.request_to_device();
+        let request = bob_request.request_to_device().await;
         let content: OutgoingContent = request.try_into().unwrap();
 
         machine
@@ -734,7 +749,7 @@ mod tests {
             machine.get_request(bob_request.other_user(), bob_request.flow_id().as_str()).unwrap();
 
         // We're not yet cancelled.
-        assert!(!alice_request.is_cancelled());
+        assert!(!alice_request.is_cancelled().await);
 
         let second_transaction_id = TransactionId::new();
         let bob_request = VerificationRequest::new(
@@ -746,7 +761,7 @@ mod tests {
             None,
         );
 
-        let request = bob_request.request_to_device();
+        let request = bob_request.request_to_device().await;
         let content: OutgoingContent = request.try_into().unwrap();
 
         machine
@@ -761,8 +776,8 @@ mod tests {
         assert_eq!(second_request.flow_id().as_str(), second_transaction_id);
 
         // Make sure both of them are cancelled.
-        assert!(alice_request.is_cancelled());
-        assert!(second_request.is_cancelled());
+        assert!(alice_request.is_cancelled().await);
+        assert!(second_request.is_cancelled().await);
     }
 
     /// Ensure that if a duplicate request is added (i.e. matching user and
@@ -784,7 +799,7 @@ mod tests {
             None,
         );
 
-        let request = bob_request.request_to_device();
+        let request = bob_request.request_to_device().await;
         let content: OutgoingContent = request.try_into().unwrap();
 
         machine
@@ -796,7 +811,7 @@ mod tests {
             machine.get_request(bob_request.other_user(), bob_request.flow_id().as_str()).unwrap();
 
         // We're not yet cancelled.
-        assert!(!first_request.is_cancelled());
+        assert!(!first_request.is_cancelled().await);
 
         // Bob is adding a second request with the same flow_id as before
         let bob_request = VerificationRequest::new(
@@ -808,7 +823,7 @@ mod tests {
             None,
         );
 
-        let request = bob_request.request_to_device();
+        let request = bob_request.request_to_device().await;
         let content: OutgoingContent = request.try_into().unwrap();
 
         machine
@@ -820,7 +835,7 @@ mod tests {
             machine.get_request(bob_request.other_user(), bob_request.flow_id().as_str()).unwrap();
 
         // None of the requests are cancelled
-        assert!(!first_request.is_cancelled());
-        assert!(!second_request.is_cancelled());
+        assert!(!first_request.is_cancelled().await);
+        assert!(!second_request.is_cancelled().await);
     }
 }

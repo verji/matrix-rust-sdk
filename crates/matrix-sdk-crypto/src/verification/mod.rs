@@ -272,11 +272,11 @@ impl Verification {
         }
     }
 
-    fn cancel(&self) -> Option<OutgoingVerificationRequest> {
+    async fn cancel(&self) -> Option<OutgoingVerificationRequest> {
         match self {
-            Verification::SasV1(v) => v.cancel(),
+            Verification::SasV1(v) => v.cancel().await,
             #[cfg(feature = "qrcode")]
-            Verification::QrV1(v) => v.cancel(),
+            Verification::QrV1(v) => v.cancel().await,
         }
     }
 }

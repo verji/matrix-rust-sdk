@@ -174,8 +174,8 @@ impl Sas {
     /// list of cancel codes can be found in the [spec]
     ///
     /// [spec]: https://spec.matrix.org/unstable/client-server-api/#mkeyverificationcancel
-    pub fn cancel(&self, cancel_code: String) -> Option<OutgoingVerificationRequest> {
-        self.inner.cancel_with_code(cancel_code.into()).map(|r| r.into())
+    pub async fn cancel(&self, cancel_code: String) -> Option<OutgoingVerificationRequest> {
+        self.inner.cancel_with_code(cancel_code.into()).await.map(|r| r.into())
     }
 
     /// Get a list of emoji indices of the emoji representation of the short
@@ -394,8 +394,8 @@ impl QrCode {
     /// list of cancel codes can be found in the [spec]
     ///
     /// [spec]: https://spec.matrix.org/unstable/client-server-api/#mkeyverificationcancel
-    pub fn cancel(&self, cancel_code: String) -> Option<OutgoingVerificationRequest> {
-        self.inner.cancel_with_code(cancel_code.into()).map(|r| r.into())
+    pub async fn cancel(&self, cancel_code: String) -> Option<OutgoingVerificationRequest> {
+        self.inner.cancel_with_code(cancel_code.into()).await.map(|r| r.into())
     }
 
     /// Confirm a verification was successful.
@@ -567,8 +567,8 @@ impl VerificationRequest {
     }
 
     /// The id of the other device that is participating in this verification.
-    pub fn other_device_id(&self) -> Option<String> {
-        self.inner.other_device_id().map(|d| d.to_string())
+    pub async fn other_device_id(&self) -> Option<String> {
+        self.inner.other_device_id().await.map(|d| d.to_string())
     }
 
     /// Get the unique ID of this verification request

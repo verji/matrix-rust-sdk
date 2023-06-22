@@ -1113,7 +1113,7 @@ impl OlmMachine {
         unused_fallback_keys: Option<&[DeviceKeyAlgorithm]>,
     ) -> OlmResult<Vec<Raw<AnyToDeviceEvent>>> {
         // Remove verification objects that have expired or are done.
-        let mut events = self.inner.verification_machine.garbage_collect();
+        let mut events = self.inner.verification_machine.garbage_collect().await;
 
         // Always save the account, a new session might get created which also
         // touches the account.
@@ -3140,8 +3140,10 @@ pub(crate) mod tests {
         let verification_request = bob.get_verification_request(alice.user_id(), flow_id).unwrap();
 
         // Bob accepts the request, sending a Ready request
-        let accept_request =
-            verification_request.accept_with_methods(vec![VerificationMethod::SasV1]).unwrap();
+        let accept_request = verification_request
+            .accept_with_methods(vec![VerificationMethod::SasV1])
+            .await
+            .unwrap();
         // And also immediately sends a start request
         let (_, start_request_from_bob) = verification_request.start_sas().await.unwrap().unwrap();
 

@@ -250,8 +250,8 @@ impl QrVerification {
     }
 
     /// Cancel the verification flow.
-    pub fn cancel(&self) -> Option<OutgoingVerificationRequest> {
-        self.cancel_with_code(CancelCode::User)
+    pub async fn cancel(&self) -> Option<OutgoingVerificationRequest> {
+        self.cancel_with_code(CancelCode::User).await
     }
 
     /// Cancel the verification.
@@ -267,11 +267,11 @@ impl QrVerification {
     /// otherwise it returns a request that needs to be sent out.
     ///
     /// [`cancel()`]: #method.cancel
-    pub fn cancel_with_code(&self, code: CancelCode) -> Option<OutgoingVerificationRequest> {
+    pub async fn cancel_with_code(&self, code: CancelCode) -> Option<OutgoingVerificationRequest> {
         let mut state = self.state.write();
 
         if let Some(request) = &self.request_handle {
-            request.cancel_with_code(&code);
+            request.cancel_with_code(&code).await;
         }
 
         let new_state = QrState::<Cancelled>::new(true, code);

@@ -15,6 +15,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
+use futures_util::{stream, StreamExt};
 use ruma::{DeviceId, OwnedTransactionId, OwnedUserId, TransactionId, UserId};
 use tracing::{trace, warn};
 
@@ -54,7 +55,7 @@ impl VerificationCache {
     /// Add a new `Verification` object to the cache, this will cancel any
     /// duplicates we have going on, including the newly inserted one, with a
     /// given user.
-    pub fn insert(&self, verification: impl Into<Verification>) {
+    pub async fn insert(&self, verification: impl Into<Verification>) {
         let verification = verification.into();
 
         let entry = self.verification.entry(verification.other_user().to_owned()).or_default();
@@ -75,11 +76,11 @@ impl VerificationCache {
                     the same user is ongoing. Cancelling both verifications"
                 );
 
-                if let Some(r) = old_verification.cancel() {
+                if let Some(r) = old_verification.cancel().await {
                     self.add_request(r.into())
                 }
 
-                if let Some(r) = verification.cancel() {
+                if let Some(r) = verification.cancel().await {
                     self.add_request(r.into())
                 }
             }
@@ -91,8 +92,8 @@ impl VerificationCache {
         user_verifications.insert(verification.flow_id().to_owned(), verification);
     }
 
-    pub fn insert_sas(&self, sas: Sas) {
-        self.insert(sas);
+    pub async fn insert_sas(&self, sas: Sas) {
+        self.insert(sas).await;
     }
 
     pub fn replace_sas(&self, sas: Sas) {
@@ -101,8 +102,8 @@ impl VerificationCache {
     }
 
     #[cfg(feature = "qrcode")]
-    pub fn insert_qr(&self, qr: QrVerification) {
-        self.insert(qr)
+    pub async fn insert_qr(&self, qr: QrVerification) {
+        self.insert(qr).await
     }
 
     #[cfg(feature = "qrcode")]
@@ -137,32 +138,32 @@ impl VerificationCache {
         self.outgoing_requests.iter().map(|r| (*r).clone()).collect()
     }
 
-    pub fn garbage_collect(&self) -> Vec<OutgoingVerificationRequest> {
+    pub async fn garbage_collect(&self) -> Vec<OutgoingVerificationRequest> {
         for user_verification in self.verification.iter() {
             user_verification.retain(|_, s| !(s.is_done() || s.is_cancelled()));
         }
 
         self.verification.retain(|_, m| !m.is_empty());
 
-        self.verification
-            .iter()
-            .flat_map(|v| {
-                let requests: Vec<OutgoingVerificationRequest> = v
-                    .value()
-                    .iter()
-                    .filter_map(|s| {
+        stream::iter(self.verification.iter())
+            .then(|v| async move {
+                let requests: Vec<OutgoingVerificationRequest> = stream::iter(v.value().iter())
+                    .filter_map(|s| async move {
                         #[allow(irrefutable_let_patterns)]
                         if let Verification::SasV1(s) = s.value() {
-                            s.cancel_if_timed_out()
+                            s.cancel_if_timed_out().await
                         } else {
                             None
                         }
                     })
-                    .collect();
+                    .collect()
+                    .await;
 
-                requests
+                stream::iter(requests)
             })
+            .flatten()
             .collect()
+            .await
     }
 
     pub fn get_sas(&self, user_id: &UserId, flow_id: &str) -> Option<Sas> {

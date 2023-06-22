@@ -73,13 +73,13 @@ pub enum VerificationRequestState {
 
 impl VerificationRequest {
     /// Has this verification finished.
-    pub fn is_done(&self) -> bool {
-        self.inner.is_done()
+    pub async fn is_done(&self) -> bool {
+        self.inner.is_done().await
     }
 
     /// Has the verification been cancelled.
-    pub fn is_cancelled(&self) -> bool {
-        self.inner.is_cancelled()
+    pub async fn is_cancelled(&self) -> bool {
+        self.inner.is_cancelled().await
     }
 
     /// Get the transaction id of this verification request
@@ -89,8 +89,8 @@ impl VerificationRequest {
 
     /// Get info about the cancellation if the verification request has been
     /// cancelled.
-    pub fn cancel_info(&self) -> Option<CancelInfo> {
-        self.inner.cancel_info()
+    pub async fn cancel_info(&self) -> Option<CancelInfo> {
+        self.inner.cancel_info().await
     }
 
     /// Get our own user id.
@@ -99,13 +99,13 @@ impl VerificationRequest {
     }
 
     /// Has the verification request been answered by another device.
-    pub fn is_passive(&self) -> bool {
-        self.inner.is_passive()
+    pub async fn is_passive(&self) -> bool {
+        self.inner.is_passive().await
     }
 
     /// Is the verification request ready to start a verification flow.
-    pub fn is_ready(&self) -> bool {
-        self.inner.is_ready()
+    pub async fn is_ready(&self) -> bool {
+        self.inner.is_ready().await
     }
 
     /// Did we initiate the verification flow.
@@ -128,8 +128,8 @@ impl VerificationRequest {
     ///
     /// Will be present only if the other side requested the verification or if
     /// we're in the ready state.
-    pub fn their_supported_methods(&self) -> Option<Vec<VerificationMethod>> {
-        self.inner.their_supported_methods()
+    pub async fn their_supported_methods(&self) -> Option<Vec<VerificationMethod>> {
+        self.inner.their_supported_methods().await
     }
 
     /// Accept the verification request.
@@ -144,7 +144,7 @@ impl VerificationRequest {
     ///
     /// [`accept_with_methods()`]: #method.accept_with_methods
     pub async fn accept(&self) -> Result<()> {
-        if let Some(request) = self.inner.accept() {
+        if let Some(request) = self.inner.accept().await {
             self.client.send_verification_request(request).await?;
         }
 
@@ -158,7 +158,7 @@ impl VerificationRequest {
     ///
     /// * `methods` - The methods that we should advertise as supported by us.
     pub async fn accept_with_methods(&self, methods: Vec<VerificationMethod>) -> Result<()> {
-        if let Some(request) = self.inner.accept_with_methods(methods) {
+        if let Some(request) = self.inner.accept_with_methods(methods).await {
             self.client.send_verification_request(request).await?;
         }
 
@@ -203,7 +203,7 @@ impl VerificationRequest {
 
     /// Cancel the verification request
     pub async fn cancel(&self) -> Result<()> {
-        if let Some(request) = self.inner.cancel() {
+        if let Some(request) = self.inner.cancel().await {
             self.client.send_verification_request(request).await?;
         }
 
@@ -245,17 +245,17 @@ impl VerificationRequest {
     ///
     /// The changes are presented as a stream of [`VerificationRequestState`]
     /// values.
-    pub fn changes(&self) -> impl Stream<Item = VerificationRequestState> {
+    pub async fn changes(&self) -> impl Stream<Item = VerificationRequestState> {
         let client = self.client.to_owned();
 
-        self.inner.changes().map(move |s| Self::convert_state(client.to_owned(), s))
+        self.inner.changes().await.map(move |s| Self::convert_state(client.to_owned(), s))
     }
 
     /// Get the current state the verification request is in.
     ///
     /// To listen to changes to the [`VerificationRequestState`] use the
     /// [`VerificationRequest::changes`] method.
-    pub fn state(&self) -> VerificationRequestState {
-        Self::convert_state(self.client.to_owned(), self.inner.state())
+    pub async fn state(&self) -> VerificationRequestState {
+        Self::convert_state(self.client.to_owned(), self.inner.state().await)
     }
 }
