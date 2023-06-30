@@ -18,6 +18,7 @@
 
 #[cfg(feature = "backups_v1")]
 pub mod backups;
+pub mod dehydrated_machine;
 mod error;
 mod file_encryption;
 mod gossiping;

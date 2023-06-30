@@ -557,10 +557,7 @@ impl ReadOnlyAccount {
         &EventEncryptionAlgorithm::MegolmV2AesSha2,
     ];
 
-    /// Create a fresh new account, this will generate the identity key-pair.
-    #[allow(clippy::ptr_arg)]
-    pub fn new(user_id: &UserId, device_id: &DeviceId) -> Self {
-        let mut account = InnerAccount::new();
+    fn new_helper(mut account: InnerAccount, user_id: &UserId, device_id: &DeviceId) -> Self {
         let identity_keys = account.identity_keys();
 
         // Let's generate some initial one-time keys while we're here. Since we know
@@ -585,6 +582,23 @@ impl ReadOnlyAccount {
             uploaded_signed_key_count: Arc::new(AtomicU64::new(0)),
             creation_local_time: MilliSecondsSinceUnixEpoch::now(),
         }
+    }
+
+    /// Create a fresh new account, this will generate the identity key-pair.
+    #[allow(clippy::ptr_arg)]
+    pub fn with_device_id(user_id: &UserId, device_id: &DeviceId) -> Self {
+        let account = InnerAccount::new();
+
+        Self::new_helper(account, user_id, device_id)
+    }
+
+    /// Create a new random [`Account`], the long-term Curve25519 identity key
+    /// will be used for the device ID.
+    pub fn new(user_id: &UserId) -> Self {
+        let account = InnerAccount::new();
+        let device_id: OwnedDeviceId = account.identity_keys().curve25519.to_base64().into();
+
+        Self::new_helper(account, user_id, &device_id)
     }
 
     /// Get the user id of the owner of the account.
@@ -1329,7 +1343,7 @@ mod tests {
 
     #[async_test]
     async fn one_time_key_creation() -> Result<()> {
-        let account = ReadOnlyAccount::new(user_id(), device_id());
+        let account = ReadOnlyAccount::with_device_id(user_id(), device_id());
 
         let (_, one_time_keys, _) = account.keys_for_upload().await;
         assert!(!one_time_keys.is_empty());
@@ -1366,7 +1380,7 @@ mod tests {
 
     #[async_test]
     async fn fallback_key_creation() -> Result<()> {
-        let account = ReadOnlyAccount::new(user_id(), device_id());
+        let account = ReadOnlyAccount::with_device_id(user_id(), device_id());
 
         let (_, _, fallback_keys) = account.keys_for_upload().await;
 
@@ -1406,7 +1420,7 @@ mod tests {
         let key = vodozemac::Curve25519PublicKey::from_base64(
             "7PUPP6Ijt5R8qLwK2c8uK5hqCNF9tOzWYgGaAay5JBs",
         )?;
-        let account = ReadOnlyAccount::new(user_id(), device_id());
+        let account = ReadOnlyAccount::with_device_id(user_id(), device_id());
 
         let key = account.sign_key(key, true).await;
 
@@ -1430,7 +1444,7 @@ mod tests {
     #[async_test]
     async fn test_account_and_device_creation_timestamp() -> Result<()> {
         let now = MilliSecondsSinceUnixEpoch::now();
-        let account = ReadOnlyAccount::new(user_id(), device_id());
+        let account = ReadOnlyAccount::with_device_id(user_id(), device_id());
         let then = MilliSecondsSinceUnixEpoch::now();
 
         assert!(account.creation_local_time() >= now);

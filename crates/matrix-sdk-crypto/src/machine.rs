@@ -56,6 +56,7 @@ use vodozemac::{
 #[cfg(feature = "backups_v1")]
 use crate::backups::BackupMachine;
 use crate::{
+    dehydrated_machine::DehydrationMachine,
     error::{EventError, MegolmError, MegolmResult, OlmError, OlmResult},
     gossiping::GossipMachine,
     identities::{user::UserIdentities, Device, IdentityManager, UserDevices},
@@ -275,7 +276,7 @@ impl OlmMachine {
                 account
             }
             None => {
-                let account = ReadOnlyAccount::new(user_id, device_id);
+                let account = ReadOnlyAccount::with_device_id(user_id, device_id);
 
                 Span::current()
                     .record("ed25519_key", display(account.identity_keys().ed25519))
@@ -1885,6 +1886,10 @@ impl OlmMachine {
     /// Useful for testing purposes only.
     pub fn same_as(&self, other: &OlmMachine) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
+    pub fn dehydration_machine(&self) -> &DehydrationMachine {
+        todo!()
     }
 }
 
