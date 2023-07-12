@@ -25,6 +25,7 @@ use matrix_sdk_common::deserialized_responses::{
 };
 use ruma::{
     api::client::{
+        dehydrated_device::DehydratedDeviceData,
         keys::{
             claim_keys::v3::{Request as KeysClaimRequest, Response as KeysClaimResponse},
             get_keys::v3::Response as KeysQueryResponse,
@@ -173,15 +174,34 @@ impl OlmMachine {
             .expect("Reading and writing to the memory store always succeeds")
     }
 
+    pub(crate) async fn rehydrate(
+        &self,
+        pickle_key: &[u8; 32],
+        device_id: &DeviceId,
+        device_data: Raw<DehydratedDeviceData>,
+    ) -> StoreResult<OlmMachine> {
+        let account =
+            ReadOnlyAccount::rehydrate(pickle_key, self.user_id(), device_id, device_data).await?;
+
+        let store = MemoryStore::new().into_crypto_store();
+
+        Ok(Self::new_helper(
+            self.user_id(),
+            self.device_id(),
+            store,
+            account,
+            self.store().private_identity(),
+        ))
+    }
+
     fn new_helper(
         user_id: &UserId,
         device_id: &DeviceId,
         store: Arc<DynCryptoStore>,
         account: ReadOnlyAccount,
-        user_identity: PrivateCrossSigningIdentity,
+        user_identity: Arc<Mutex<PrivateCrossSigningIdentity>>,
     ) -> Self {
         let user_id: OwnedUserId = user_id.into();
-        let user_identity = Arc::new(Mutex::new(user_identity));
 
         let verification_machine =
             VerificationMachine::new(account.clone(), user_identity.clone(), store.clone());
@@ -316,6 +336,8 @@ impl OlmMachine {
                 PrivateCrossSigningIdentity::empty(user_id)
             }
         };
+
+        let identity = Arc::new(Mutex::new(identity));
 
         Ok(OlmMachine::new_helper(user_id, device_id, store, account, identity))
     }
@@ -1143,6 +1165,32 @@ impl OlmMachine {
         one_time_keys_counts: &BTreeMap<DeviceKeyAlgorithm, UInt>,
         unused_fallback_keys: Option<&[DeviceKeyAlgorithm]>,
     ) -> OlmResult<(Vec<Raw<AnyToDeviceEvent>>, Vec<RoomKeyInfo>)> {
+        let (events, changes) = self
+            .receive_sync_changes_helper(
+                to_device_events,
+                changed_devices,
+                one_time_keys_counts,
+                unused_fallback_keys,
+            )
+            .await?;
+
+        // Technically save_changes also does the same work, so if it's slow we could
+        // refactor this to do it only once.
+        let room_key_updates: Vec<_> =
+            changes.inbound_group_sessions.iter().map(RoomKeyInfo::from).collect();
+
+        self.store().save_changes(changes).await?;
+
+        Ok((events, room_key_updates))
+    }
+
+    pub(crate) async fn receive_sync_changes_helper(
+        &self,
+        to_device_events: Vec<Raw<AnyToDeviceEvent>>,
+        changed_devices: &DeviceLists,
+        one_time_keys_counts: &BTreeMap<DeviceKeyAlgorithm, UInt>,
+        unused_fallback_keys: Option<&[DeviceKeyAlgorithm]>,
+    ) -> OlmResult<(Vec<Raw<AnyToDeviceEvent>>, Changes)> {
         // Remove verification objects that have expired or are done.
         let mut events = self.inner.verification_machine.garbage_collect();
 
@@ -1167,19 +1215,12 @@ impl OlmMachine {
             events.push(raw_event);
         }
 
-        // Technically save_changes also does the same work, so if it's slow we could
-        // refactor this to do it only once.
-        let room_key_updates: Vec<_> =
-            changes.inbound_group_sessions.iter().map(RoomKeyInfo::from).collect();
-
         let changed_sessions =
             self.inner.key_request_machine.collect_incoming_key_requests().await?;
 
         changes.sessions.extend(changed_sessions);
 
-        self.store().save_changes(changes).await?;
-
-        Ok((events, room_key_updates))
+        Ok((events, changes))
     }
 
     /// Request a room key from our devices.
@@ -1880,16 +1921,16 @@ impl OlmMachine {
         Ok(true)
     }
 
+    pub fn dehydration_machine(&self) -> DehydrationMachine {
+        DehydrationMachine { inner: self.to_owned() }
+    }
+
     #[cfg(any(feature = "testing", test))]
     /// Returns whether this `OlmMachine` is the same another one.
     ///
     /// Useful for testing purposes only.
     pub fn same_as(&self, other: &OlmMachine) -> bool {
         Arc::ptr_eq(&self.inner, &other.inner)
-    }
-
-    pub fn dehydration_machine(&self) -> &DehydrationMachine {
-        todo!()
     }
 }
 

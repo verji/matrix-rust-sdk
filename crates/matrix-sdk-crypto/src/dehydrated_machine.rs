@@ -27,35 +27,48 @@ use crate::{
     olm::{Account, PrivateCrossSigningIdentity},
     store::{IntoCryptoStore, MemoryStore, Store},
     verification::VerificationMachine,
-    CryptoStoreError, OlmError, OlmMachine, ReadOnlyAccount,
+    OlmError, OlmMachine, ReadOnlyAccount,
 };
 
 pub struct DehydrationMachine {
-    inner: OlmMachine,
+    pub(crate) inner: OlmMachine,
 }
 
 impl DehydrationMachine {
     pub fn create(&self) -> DehydratedAccount {
         DehydratedAccount::new(self.inner.user_id(), self.inner.store().private_identity())
     }
+
+    pub async fn rehydrate(
+        &self,
+        pickle_key: &[u8; 32],
+        device_id: &DeviceId,
+        device_data: Raw<DehydratedDeviceData>,
+    ) -> Result<RehydratedMachine, serde_json::Error> {
+        let rehydrated = self.inner.rehydrate(pickle_key, device_id, device_data).await.unwrap();
+
+        Ok(RehydratedMachine { rehydrated, original: self.inner.to_owned() })
+    }
 }
 
 pub struct RehydratedMachine {
-    dehydrated: OlmMachine,
+    rehydrated: OlmMachine,
     original: OlmMachine,
 }
 
 impl RehydratedMachine {
-    pub(crate) fn new(target: OlmMachine, device_id: &DeviceId, dehydrated_pickle: String) -> Self {
-        todo!()
-    }
-
     pub async fn receive_events(&self, events: Vec<Raw<AnyToDeviceEvent>>) -> Result<(), OlmError> {
         // TODO: Intercept the room keys and store them in the `original` `OlmMachine`.
 
-        self.dehydrated
-            .receive_sync_changes(events, &Default::default(), &Default::default(), None)
+        let (_, changes) = self
+            .rehydrated
+            .receive_sync_changes_helper(events, &Default::default(), &Default::default(), None)
             .await?;
+
+        let room_keys = &changes.inbound_group_sessions;
+
+        self.original.store().save_inbound_group_sessions(&room_keys).await?;
+        self.rehydrated.store().save_changes(changes).await?;
 
         Ok(())
     }
@@ -82,8 +95,9 @@ impl DehydratedAccount {
     pub async fn keys_for_upload(
         &self,
         initial_device_display_name: String,
-        pickle_key: &[u8],
+        pickle_key: &[u8; 32],
     ) -> put_dehydrated_device::unstable::Request {
+        // TODO: We need to ensure that a fallback key has been generated.
         let (device_keys, one_time_keys, fallback_keys) = self.account.keys_for_upload().await;
 
         let device_keys = device_keys
@@ -91,14 +105,10 @@ impl DehydratedAccount {
             .to_raw();
 
         let device_id = self.account.device_id().to_owned();
-        let devicd_data = self.get_device_data(pickle_key).await;
+        let device_data = self.account.dehydrate(pickle_key).await;
 
-        assign!(put_dehydrated_device::unstable::Request::new(device_id, initial_device_display_name, devicd_data, device_keys), {
+        assign!(put_dehydrated_device::unstable::Request::new(device_id, initial_device_display_name, device_data, device_keys), {
             one_time_keys, fallback_keys
         })
-    }
-
-    pub async fn get_device_data(&self, pickle_key: &[u8]) -> Raw<DehydratedDeviceData> {
-        todo!()
     }
 }

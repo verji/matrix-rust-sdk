@@ -24,13 +24,14 @@ use std::{
 };
 
 use eyeball::SharedObservable;
+use futures_core::Stream;
 use futures_util::{
     future::try_join,
     stream::{self, StreamExt},
 };
 use matrix_sdk_base::crypto::{
-    store::locks::CryptoStoreLockGuard, OlmMachine, OutgoingRequest, RoomMessageRequest,
-    ToDeviceRequest,
+    store::locks::CryptoStoreLockGuard, OlmMachine, OutgoingRequest, ReadOnlyDevice,
+    RoomMessageRequest, ToDeviceRequest,
 };
 use ruma::{
     api::client::{
@@ -67,6 +68,7 @@ use crate::{
     Client, Error, Result, Room, TransmissionProgress,
 };
 
+pub mod device_dehydration;
 mod futures;
 pub mod identities;
 pub mod verification;
@@ -81,6 +83,7 @@ pub use matrix_sdk_base::crypto::{
     SessionCreationError, SignatureError, VERSION,
 };
 
+use self::device_dehydration::DehydratedDevice;
 pub use self::futures::PrepareEncryptedFile;
 pub use crate::error::RoomKeyImportError;
 
@@ -945,6 +948,25 @@ impl Encryption {
         } else {
             Ok(None)
         }
+    }
+
+    pub async fn dehydrated_device_foo(&self) -> DehydratedDevice {
+        DehydratedDevice {
+            inner: self
+                .client
+                .olm_machine()
+                .await
+                .as_ref()
+                .expect("We should have an Olm Machine once we try to dehydrate a device")
+                .dehydration_machine(),
+            client: self.client.to_owned(),
+        }
+    }
+
+    pub async fn devices_stream(
+        &self,
+    ) -> impl Stream<Item = BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, ReadOnlyDevice>>> {
+        self.client.olm_machine().await.as_ref().unwrap().store().devices_stream()
     }
 }
 

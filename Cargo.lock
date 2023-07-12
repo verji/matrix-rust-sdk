@@ -1383,6 +1383,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-device-dehydration"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "matrix-sdk",
+ "tokio",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "example-emoji-verification"
 version = "0.1.0"
 dependencies = [

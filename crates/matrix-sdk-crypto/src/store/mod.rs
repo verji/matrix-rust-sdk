@@ -137,6 +137,9 @@ struct StoreInner {
     /// The sender side of a broadcast channel which sends out secrets we
     /// received as a `m.secret.send` event.
     secrets_broadcaster: broadcast::Sender<GossippedSecret>,
+
+    devices_sender:
+        broadcast::Sender<BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, ReadOnlyDevice>>>,
 }
 
 #[derive(Default, Debug)]
@@ -386,6 +389,7 @@ impl Store {
     ) -> Self {
         let (room_keys_received_sender, _) = broadcast::channel(10);
         let (secrets_broadcaster, _) = broadcast::channel(10);
+        let (devices_sender, _) = broadcast::channel(10);
 
         let inner = Arc::new(StoreInner {
             user_id,
@@ -399,6 +403,7 @@ impl Store {
             tracked_user_loading_lock: Mutex::new(()),
             room_keys_received_sender,
             secrets_broadcaster,
+            devices_sender,
         });
 
         Self { inner }
@@ -442,6 +447,21 @@ impl Store {
             changes.inbound_group_sessions.iter().map(RoomKeyInfo::from).collect();
 
         let secrets = changes.secrets.to_owned();
+        let mut devices: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
+
+        for device in &changes.devices.new {
+            devices
+                .entry(device.user_id().to_owned())
+                .or_default()
+                .insert(device.device_id().to_owned(), device.to_owned());
+        }
+
+        for device in &changes.devices.changed {
+            devices
+                .entry(device.user_id().to_owned())
+                .or_default()
+                .insert(device.device_id().to_owned(), device.to_owned());
+        }
 
         self.inner.store.save_changes(changes).await?;
 
@@ -452,6 +472,10 @@ impl Store {
 
         for secret in secrets {
             let _ = self.inner.secrets_broadcaster.send(secret);
+        }
+
+        if !devices.is_empty() {
+            let _ = self.inner.devices_sender.send(devices);
         }
 
         Ok(())
@@ -491,8 +515,7 @@ impl Store {
         self.save_changes(changes).await
     }
 
-    #[cfg(test)]
-    /// Testing helper to allow to save only a set of InboundGroupSession
+    /// TODO: Document this
     pub(crate) async fn save_inbound_group_sessions(
         &self,
         sessions: &[InboundGroupSession],
@@ -996,6 +1019,25 @@ impl Store {
     /// logged and items will be dropped.
     pub fn room_keys_received_stream(&self) -> impl Stream<Item = Vec<RoomKeyInfo>> {
         let stream = BroadcastStream::new(self.inner.room_keys_received_sender.subscribe());
+
+        // the raw BroadcastStream gives us Results which can fail with
+        // BroadcastStreamRecvError if the reader falls behind. That's annoying to work
+        // with, so here we just drop the errors.
+        stream.filter_map(|result| async move {
+            match result {
+                Ok(r) => Some(r),
+                Err(BroadcastStreamRecvError::Lagged(lag)) => {
+                    warn!("room_keys_received_stream missed {} updates", lag);
+                    None
+                }
+            }
+        })
+    }
+
+    pub fn devices_stream(
+        &self,
+    ) -> impl Stream<Item = BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, ReadOnlyDevice>>> {
+        let stream = BroadcastStream::new(self.inner.devices_sender.subscribe());
 
         // the raw BroadcastStream gives us Results which can fail with
         // BroadcastStreamRecvError if the reader falls behind. That's annoying to work
