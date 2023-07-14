@@ -49,6 +49,19 @@ async fn create_dehydrated_device(client: Client, pickle_key: String) {
     }
 }
 
+async fn rehydrate(client: Client, pickle_key: String) {
+    let devices_stream = client.encryption().devices_stream().await;
+    let dehydrated_device = client.encryption().dehydrated_device_foo().await;
+
+    // TODO: get the pickle key from the user.
+    let pickle_key_bytes = [0u8; 32];
+
+    match dehydrated_device.rehydrate(&pickle_key_bytes).await {
+        Ok(n) => println!("Successfully rehydrated a device, imported {n} room keys."),
+        Err(e) => eprintln!("Couldn't rehydrate a device: {e:?}."),
+    }
+}
+
 async fn print_devices(user_id: &UserId, client: &Client) {
     println!("Devices of user {user_id}");
 
@@ -120,10 +133,9 @@ async fn handle_new_devices(
     pin_mut!(stream);
 
     while let Some(update) = stream.next().await {
-        println!("GOT DEVICE UPDATE {update:?}");
-
         if update.contains_key(client.user_id().expect("We should know our own user id by now")) {
-            wait_for_pickle_key(client).await;
+            rehydrate(client, "TODO".to_owned()).await;
+            // wait_for_pickle_key(client).await;
             break;
         }
     }

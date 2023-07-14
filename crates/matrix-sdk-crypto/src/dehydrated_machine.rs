@@ -22,6 +22,7 @@ use ruma::{
     DeviceId, UserId,
 };
 use tokio::sync::Mutex;
+use tracing::{instrument, trace};
 
 use crate::{
     olm::{Account, PrivateCrossSigningIdentity},
@@ -39,6 +40,10 @@ impl DehydrationMachine {
         DehydratedAccount::new(self.inner.user_id(), self.inner.store().private_identity())
     }
 
+    pub async fn resume_rehydration(&self) -> Result<RehydratedMachine, serde_json::Error> {
+        todo!()
+    }
+
     pub async fn rehydrate(
         &self,
         pickle_key: &[u8; 32],
@@ -51,14 +56,26 @@ impl DehydrationMachine {
     }
 }
 
+#[derive(Debug)]
 pub struct RehydratedMachine {
     rehydrated: OlmMachine,
     original: OlmMachine,
 }
 
 impl RehydratedMachine {
-    pub async fn receive_events(&self, events: Vec<Raw<AnyToDeviceEvent>>) -> Result<(), OlmError> {
-        // TODO: Intercept the room keys and store them in the `original` `OlmMachine`.
+    #[instrument(
+        skip_all,
+        fields(
+            user_id = %self.original.user_id(),
+            rehydrated_device_id = %self.rehydrated.device_id(),
+            original_device_id = %self.original.device_id()
+        )
+    )]
+    pub async fn receive_events(
+        &self,
+        events: Vec<Raw<AnyToDeviceEvent>>,
+    ) -> Result<usize, OlmError> {
+        trace!("Receiving events for a rehydrated Device");
 
         let (_, changes) = self
             .rehydrated
@@ -66,11 +83,14 @@ impl RehydratedMachine {
             .await?;
 
         let room_keys = &changes.inbound_group_sessions;
+        let room_key_count = room_keys.len();
+
+        trace!(room_key_count = room_keys.len(), "Collected room keys from the rehydrated device");
 
         self.original.store().save_inbound_group_sessions(&room_keys).await?;
         self.rehydrated.store().save_changes(changes).await?;
 
-        Ok(())
+        Ok(room_key_count)
     }
 }
 
@@ -92,6 +112,13 @@ impl DehydratedAccount {
         Self { account }
     }
 
+    #[instrument(
+        skip_all, fields(
+            user_id = %self.account.user_id(),
+            device_id = %self.account.device_id(),
+            identity_keys = ?self.account.identity_keys,
+        )
+    )]
     pub async fn keys_for_upload(
         &self,
         initial_device_display_name: String,
@@ -101,8 +128,10 @@ impl DehydratedAccount {
         let (device_keys, one_time_keys, fallback_keys) = self.account.keys_for_upload().await;
 
         let device_keys = device_keys
-            .expect("We should always upload device keys for a dehydrated device.")
+            .expect("We should always try to upload device keys for a dehydrated device.")
             .to_raw();
+
+        trace!("Creating a upload request for a dehydrated device");
 
         let device_id = self.account.device_id().to_owned();
         let device_data = self.account.dehydrate(pickle_key).await;
