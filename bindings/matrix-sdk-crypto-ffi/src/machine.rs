@@ -48,6 +48,7 @@ use tokio::runtime::Runtime;
 use zeroize::Zeroize;
 
 use crate::{
+    dehydrated_devices::DehydratedDevice,
     error::{CryptoStoreError, DecryptionError, SecretImportError, SignatureError},
     parse_user_id,
     responses::{response_from_string, OwnedResponse},
@@ -1423,6 +1424,10 @@ impl OlmMachine {
             .runtime
             .block_on(self.inner.backup_machine().verify_backup(backup_info, false))?
             .into())
+    }
+
+    pub fn dehydrated_devices(&self) -> Arc<DehydratedDevice> {
+        todo!()
     }
 }
 

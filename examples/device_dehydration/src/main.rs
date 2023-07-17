@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, io::Write};
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use futures_util::{pin_mut, Stream, StreamExt};
 use matrix_sdk::{
     config::SyncSettings,
@@ -9,10 +9,10 @@ use matrix_sdk::{
     ruma::{OwnedDeviceId, OwnedUserId, UserId},
     Client,
 };
-use tokio::spawn;
+use tokio::{spawn, task::spawn_blocking};
 use url::Url;
 
-async fn wait_for_pickle_key(client: Client) {
+fn wait_for_pickle_key() -> String {
     println!("\nEnter a pickle key: ");
     std::io::stdout().flush().expect("We should be able to flush stdout");
 
@@ -21,18 +21,15 @@ async fn wait_for_pickle_key(client: Client) {
 
     let pickle_key = input.trim();
 
-    create_dehydrated_device(client, pickle_key.to_owned()).await
+    pickle_key.to_owned()
 }
 
-async fn create_dehydrated_device(client: Client, pickle_key: String) {
+async fn create(client: Client, pickle_key: &[u8; 32]) {
     let own_user = client.user_id().expect("We should know our own user id by now.");
     let devices_stream = client.encryption().devices_stream().await;
-    let dehydrated_device = client.encryption().dehydrated_device_foo().await;
+    let dehydrated_device = client.encryption().dehydrated_devices().await;
 
-    // TODO: get the pickle key from the user.
-    let pickle_key_bytes = [0u8; 32];
-
-    if let Err(e) = dehydrated_device.create(&pickle_key_bytes).await {
+    if let Err(e) = dehydrated_device.create(&pickle_key).await {
         eprintln!("Couldn't create a dehydrated device: {e:?}");
     } else {
         println!("Successfully created a dehydrated device, waiting for server echo");
@@ -49,14 +46,10 @@ async fn create_dehydrated_device(client: Client, pickle_key: String) {
     }
 }
 
-async fn rehydrate(client: Client, pickle_key: String) {
-    let devices_stream = client.encryption().devices_stream().await;
-    let dehydrated_device = client.encryption().dehydrated_device_foo().await;
+async fn rehydrate(client: Client, pickle_key: &[u8; 32]) {
+    let dehydrated_device = client.encryption().dehydrated_devices().await;
 
-    // TODO: get the pickle key from the user.
-    let pickle_key_bytes = [0u8; 32];
-
-    match dehydrated_device.rehydrate(&pickle_key_bytes).await {
+    match dehydrated_device.rehydrate(&pickle_key).await {
         Ok(n) => println!("Successfully rehydrated a device, imported {n} room keys."),
         Err(e) => eprintln!("Couldn't rehydrate a device: {e:?}."),
     }
@@ -87,7 +80,16 @@ async fn sync(client: Client) -> matrix_sdk::Result<()> {
     Ok(())
 }
 
-#[derive(Parser, Debug)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Parser, ValueEnum)]
+#[clap(rename_all = "kebab_case")]
+enum Mode {
+    /// Create a new dehydrated device.
+    Create,
+    /// Restore an existing dehydrated device.
+    Restore,
+}
+
+#[derive(Debug, Parser)]
 struct Cli {
     /// The homeserver to connect to.
     #[clap(value_parser)]
@@ -108,6 +110,10 @@ struct Cli {
     /// Enable verbose logging output.
     #[clap(short, long, action)]
     verbose: bool,
+
+    /// Which mode the example should run in.
+    #[clap(short, long, value_enum)]
+    mode: Mode,
 }
 
 async fn login(cli: Cli) -> Result<Client> {
@@ -129,13 +135,24 @@ async fn login(cli: Cli) -> Result<Client> {
 async fn handle_new_devices(
     client: Client,
     stream: impl Stream<Item = BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceId, ReadOnlyDevice>>>,
+    mode: Mode,
 ) {
     pin_mut!(stream);
 
     while let Some(update) = stream.next().await {
         if update.contains_key(client.user_id().expect("We should know our own user id by now")) {
-            rehydrate(client, "TODO".to_owned()).await;
-            // wait_for_pickle_key(client).await;
+            let _pickle_key = spawn_blocking(wait_for_pickle_key)
+                .await
+                .expect("Waiting for a pickle key should never panic");
+
+            // TODO: get the pickle key from the user.
+            let pickle_key = [0u8; 32];
+
+            match mode {
+                Mode::Create => create(client, &pickle_key).await,
+                Mode::Restore => rehydrate(client, &pickle_key).await,
+            }
+
             break;
         }
     }
@@ -149,10 +166,12 @@ async fn main() -> Result<()> {
         tracing_subscriber::fmt::init();
     }
 
-    let client = login(cli).await?;
+    let mode = cli.mode;
 
+    let client = login(cli).await?;
     let devices = client.encryption().devices_stream().await;
-    spawn(handle_new_devices(client.to_owned(), devices));
+
+    spawn(handle_new_devices(client.to_owned(), devices, mode));
 
     sync(client).await?;
 

@@ -31,16 +31,16 @@ use crate::{
     OlmError, OlmMachine, ReadOnlyAccount,
 };
 
-pub struct DehydrationMachine {
+pub struct DehydratedDevices {
     pub(crate) inner: OlmMachine,
 }
 
-impl DehydrationMachine {
-    pub fn create(&self) -> DehydratedAccount {
-        DehydratedAccount::new(self.inner.user_id(), self.inner.store().private_identity())
+impl DehydratedDevices {
+    pub fn create(&self) -> DehydratedDevice {
+        DehydratedDevice::new(self.inner.user_id(), self.inner.store().private_identity())
     }
 
-    pub async fn resume_rehydration(&self) -> Result<RehydratedMachine, serde_json::Error> {
+    pub async fn resume_rehydration(&self) -> Result<RehydratedDevice, serde_json::Error> {
         todo!()
     }
 
@@ -49,20 +49,20 @@ impl DehydrationMachine {
         pickle_key: &[u8; 32],
         device_id: &DeviceId,
         device_data: Raw<DehydratedDeviceData>,
-    ) -> Result<RehydratedMachine, serde_json::Error> {
+    ) -> Result<RehydratedDevice, serde_json::Error> {
         let rehydrated = self.inner.rehydrate(pickle_key, device_id, device_data).await.unwrap();
 
-        Ok(RehydratedMachine { rehydrated, original: self.inner.to_owned() })
+        Ok(RehydratedDevice { rehydrated, original: self.inner.to_owned() })
     }
 }
 
 #[derive(Debug)]
-pub struct RehydratedMachine {
+pub struct RehydratedDevice {
     rehydrated: OlmMachine,
     original: OlmMachine,
 }
 
-impl RehydratedMachine {
+impl RehydratedDevice {
     #[instrument(
         skip_all,
         fields(
@@ -94,11 +94,11 @@ impl RehydratedMachine {
     }
 }
 
-pub struct DehydratedAccount {
+pub struct DehydratedDevice {
     account: Account,
 }
 
-impl DehydratedAccount {
+impl DehydratedDevice {
     pub fn new(user_id: &UserId, user_identity: Arc<Mutex<PrivateCrossSigningIdentity>>) -> Self {
         let account = ReadOnlyAccount::new(user_id);
         let store = MemoryStore::new().into_crypto_store();

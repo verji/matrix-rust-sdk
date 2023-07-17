@@ -57,7 +57,7 @@ use vodozemac::{
 #[cfg(feature = "backups_v1")]
 use crate::backups::BackupMachine;
 use crate::{
-    dehydrated_machine::DehydrationMachine,
+    dehydrated_machine::DehydratedDevices,
     error::{EventError, MegolmError, MegolmResult, OlmError, OlmResult},
     gossiping::GossipMachine,
     identities::{user::UserIdentities, Device, IdentityManager, UserDevices},
@@ -1921,8 +1921,8 @@ impl OlmMachine {
         Ok(true)
     }
 
-    pub fn dehydration_machine(&self) -> DehydrationMachine {
-        DehydrationMachine { inner: self.to_owned() }
+    pub fn dehydration_machine(&self) -> DehydratedDevices {
+        DehydratedDevices { inner: self.to_owned() }
     }
 
     #[cfg(any(feature = "testing", test))]

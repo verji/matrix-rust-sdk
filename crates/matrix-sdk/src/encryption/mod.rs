@@ -83,7 +83,7 @@ pub use matrix_sdk_base::crypto::{
     SessionCreationError, SignatureError, VERSION,
 };
 
-use self::device_dehydration::DehydratedDevice;
+use self::device_dehydration::DehydratedDevices;
 pub use self::futures::PrepareEncryptedFile;
 pub use crate::error::RoomKeyImportError;
 
@@ -950,8 +950,8 @@ impl Encryption {
         }
     }
 
-    pub async fn dehydrated_device_foo(&self) -> DehydratedDevice {
-        DehydratedDevice {
+    pub async fn dehydrated_devices(&self) -> DehydratedDevices {
+        DehydratedDevices {
             inner: self
                 .client
                 .olm_machine()
