@@ -10,8 +10,8 @@ use zeroize::Zeroize;
 
 #[derive(uniffi::Object)]
 pub struct DehydratedDevices {
-    runtime: Handle,
-    inner: InnerDehydratedDevices,
+    pub(crate) runtime: Handle,
+    pub(crate) inner: InnerDehydratedDevices,
 }
 
 #[uniffi::export]
@@ -61,8 +61,8 @@ impl RehydratedDevice {
 
 #[derive(uniffi::Object)]
 pub struct DehydratedDevice {
-    runtime: Handle,
-    inner: InnerDehydratedDevice,
+    pub(crate) runtime: Handle,
+    pub(crate) inner: InnerDehydratedDevice,
 }
 
 impl DehydratedDevice {
