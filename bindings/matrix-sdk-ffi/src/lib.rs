@@ -53,5 +53,6 @@ fn sdk_git_sha() -> String {
 
 #[uniffi::export]
 fn init_tokio_console() {
+    let _guard = RUNTIME.enter();
     console_subscriber::init();
 }
