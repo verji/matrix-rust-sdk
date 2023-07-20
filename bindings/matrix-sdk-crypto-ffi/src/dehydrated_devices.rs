@@ -65,6 +65,7 @@ pub struct DehydratedDevice {
     pub(crate) inner: InnerDehydratedDevice,
 }
 
+#[uniffi::export]
 impl DehydratedDevice {
     pub fn keys_for_upload(
         &self,
