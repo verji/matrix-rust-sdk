@@ -40,3 +40,6 @@ rustflags = [
 [unstable]
 rustdoc-map = true
 target-applies-to-host = true
+
+[build]
+rustflags = ["--cfg", "tokio_unstable"]

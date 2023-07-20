@@ -50,3 +50,8 @@ uniffi::include_scaffolding!("api");
 fn sdk_git_sha() -> String {
     env!("VERGEN_GIT_SHA").to_owned()
 }
+
+#[uniffi::export]
+fn init_tokio_console() {
+    console_subscriber::init();
+}
