@@ -1,10 +1,11 @@
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 
 use matrix_sdk_crypto::dehydrated_machine::{
     DehydratedDevice as InnerDehydratedDevice, DehydratedDevices as InnerDehydratedDevices,
     RehydratedDevice as InnerRehydratedDevice,
 };
 use ruma::{api::client::dehydrated_device, events::AnyToDeviceEvent, serde::Raw, OwnedDeviceId};
+use serde_json::json;
 use tokio::runtime::Handle;
 use zeroize::Zeroize;
 
@@ -82,49 +83,28 @@ impl DehydratedDevice {
     }
 }
 
-#[derive(uniffi::Record)]
+#[derive(Debug, uniffi::Record)]
 pub struct UploadDehydratedDeviceRequest {
-    /// The unique ID of the device.
-    device_id: String,
-
-    /// The display name of the device.
-    initial_device_display_name: String,
-
-    /// The data of the dehydrated device, containing the serialized and
-    /// encrypted private parts of the [`DeviceKeys`].
-    device_data: String,
-
-    /// Identity keys for the device.
-    ///
-    /// May be absent if no new identity keys are required.
-    pub device_keys: String,
-
-    /// One-time public keys for "pre-key" messages.
-    pub one_time_keys: HashMap<String, String>,
-
-    /// Fallback public keys for "pre-key" messages.
-    pub fallback_keys: HashMap<String, String>,
+    /// The serialized JSON body of the request.
+    body: String,
 }
 
 impl From<dehydrated_device::put_dehydrated_device::unstable::Request>
     for UploadDehydratedDeviceRequest
 {
     fn from(value: dehydrated_device::put_dehydrated_device::unstable::Request) -> Self {
-        Self {
-            device_id: value.device_id.to_string(),
-            initial_device_display_name: value.initial_device_display_name,
-            device_data: value.device_data.json().get().to_owned(),
-            device_keys: value.device_keys.json().get().to_owned(),
-            one_time_keys: value
-                .one_time_keys
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.json().get().to_owned()))
-                .collect(),
-            fallback_keys: value
-                .fallback_keys
-                .into_iter()
-                .map(|(k, v)| (k.to_string(), v.json().get().to_owned()))
-                .collect(),
-        }
+        let body = json!({
+            "device_id": value.device_id,
+            "device_data": value.device_data,
+            "initial_device_display_name": value.initial_device_display_name,
+            "device_keys": value.device_keys,
+            "one_time_keys": value.one_time_keys,
+            "fallback_keys": value.fallback_keys,
+        });
+
+        let body = serde_json::to_string(&body)
+            .expect("We should be able to serialize the PUT dehydrated devices request body");
+
+        Self { body }
     }
 }
