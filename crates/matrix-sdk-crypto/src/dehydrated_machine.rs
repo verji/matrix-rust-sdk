@@ -124,19 +124,27 @@ impl DehydratedDevice {
         initial_device_display_name: String,
         pickle_key: &[u8; 32],
     ) -> put_dehydrated_device::unstable::Request {
-        // TODO: We need to ensure that a fallback key has been generated.
+        self.account.generate_fallback_key_helper().await;
         let (device_keys, one_time_keys, fallback_keys) = self.account.keys_for_upload().await;
 
-        let device_keys = device_keys
-            .expect("We should always try to upload device keys for a dehydrated device.")
-            .to_raw();
+        let mut device_keys = device_keys
+            .expect("We should always try to upload device keys for a dehydrated device.");
+
+        self.account
+            .store
+            .private_identity()
+            .lock()
+            .await
+            .sign_device_keys(&mut device_keys)
+            .await
+            .expect("We should be able to sign our device");
 
         trace!("Creating a upload request for a dehydrated device");
 
         let device_id = self.account.device_id().to_owned();
         let device_data = self.account.dehydrate(pickle_key).await;
 
-        assign!(put_dehydrated_device::unstable::Request::new(device_id, initial_device_display_name, device_data, device_keys), {
+        assign!(put_dehydrated_device::unstable::Request::new(device_id, initial_device_display_name, device_data, device_keys.to_raw()), {
             one_time_keys, fallback_keys
         })
     }
