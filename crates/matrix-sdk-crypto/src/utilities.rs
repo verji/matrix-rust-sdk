@@ -34,6 +34,12 @@ const STANDARD_NO_PAD: GeneralPurpose = GeneralPurpose::new(
         .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
 );
 
+const URL_SAFE: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::URL_SAFE,
+    general_purpose::NO_PAD
+        .with_decode_padding_mode(base64::engine::DecodePaddingMode::Indifferent),
+);
+
 /// Decode the input as base64 with no padding.
 pub fn decode(input: impl AsRef<[u8]>) -> Result<Vec<u8>, DecodeError> {
     STANDARD_NO_PAD.decode(input)
@@ -42,6 +48,11 @@ pub fn decode(input: impl AsRef<[u8]>) -> Result<Vec<u8>, DecodeError> {
 /// Encode the input as base64 with no padding.
 pub fn encode(input: impl AsRef<[u8]>) -> String {
     STANDARD_NO_PAD.encode(input)
+}
+
+/// Encode the input as URL-safe base64 with no padding.
+pub fn encode_url_safe(input: impl AsRef<[u8]>) -> String {
+    URL_SAFE.encode(input)
 }
 
 #[cfg(test)]

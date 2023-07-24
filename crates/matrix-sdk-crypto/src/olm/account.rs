@@ -72,7 +72,7 @@ use crate::{
         },
         CrossSigningKey, DeviceKeys, EventEncryptionAlgorithm, MasterPubkey, OneTimeKey, SignedKey,
     },
-    utilities::encode,
+    utilities::{encode, encode_url_safe},
     CryptoStoreError, OlmError, SignatureError,
 };
 
@@ -602,7 +602,10 @@ impl ReadOnlyAccount {
     /// will be used for the device ID.
     pub fn new(user_id: &UserId) -> Self {
         let account = InnerAccount::new();
-        let device_id: OwnedDeviceId = account.identity_keys().curve25519.to_base64().into();
+        // The device id might be used in a URL, so let's encode it in a
+        // URL-safe manner.
+        let device_id: OwnedDeviceId =
+            encode_url_safe(account.identity_keys().curve25519.as_bytes()).into();
 
         Self::new_helper(account, user_id, &device_id)
     }
