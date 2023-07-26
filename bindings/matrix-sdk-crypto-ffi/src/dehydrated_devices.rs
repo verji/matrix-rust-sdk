@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{mem::ManuallyDrop, sync::Arc};
 
 use matrix_sdk_crypto::dehydrated_machine::{
     DehydratedDevice as InnerDehydratedDevice, DehydratedDevices as InnerDehydratedDevices,
@@ -12,13 +12,26 @@ use zeroize::Zeroize;
 #[derive(uniffi::Object)]
 pub struct DehydratedDevices {
     pub(crate) runtime: Handle,
-    pub(crate) inner: InnerDehydratedDevices,
+    pub(crate) inner: ManuallyDrop<InnerDehydratedDevices>,
+}
+
+impl Drop for DehydratedDevices {
+    fn drop(&mut self) {
+        // See the drop implementation for the `crate::OlmMachine` for an explanation.
+        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
+        let _guard = self.runtime.enter();
+        drop(inner);
+    }
 }
 
 #[uniffi::export]
 impl DehydratedDevices {
     pub fn create(&self) -> Arc<DehydratedDevice> {
-        DehydratedDevice { inner: self.inner.create(), runtime: self.runtime.to_owned() }.into()
+        DehydratedDevice {
+            inner: ManuallyDrop::new(self.inner.create()),
+            runtime: self.runtime.to_owned(),
+        }
+        .into()
     }
 
     pub fn rehydrate(
@@ -33,10 +46,9 @@ impl DehydratedDevices {
 
         let ret = RehydratedDevice {
             runtime: self.runtime.to_owned(),
-            inner: self
-                .runtime
-                .block_on(self.inner.rehydrate(&key, &device_id, device_data))
-                .unwrap(),
+            inner: ManuallyDrop::new(
+                self.runtime.block_on(self.inner.rehydrate(&key, &device_id, device_data)).unwrap(),
+            ),
         }
         .into();
 
@@ -48,8 +60,17 @@ impl DehydratedDevices {
 
 #[derive(uniffi::Object)]
 pub struct RehydratedDevice {
-    inner: InnerRehydratedDevice,
+    inner: ManuallyDrop<InnerRehydratedDevice>,
     runtime: Handle,
+}
+
+impl Drop for RehydratedDevice {
+    fn drop(&mut self) {
+        // See the drop implementation for the `crate::OlmMachine` for an explanation.
+        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
+        let _guard = self.runtime.enter();
+        drop(inner);
+    }
 }
 
 #[uniffi::export]
@@ -63,7 +84,16 @@ impl RehydratedDevice {
 #[derive(uniffi::Object)]
 pub struct DehydratedDevice {
     pub(crate) runtime: Handle,
-    pub(crate) inner: InnerDehydratedDevice,
+    pub(crate) inner: ManuallyDrop<InnerDehydratedDevice>,
+}
+
+impl Drop for DehydratedDevice {
+    fn drop(&mut self) {
+        // See the drop implementation for the `crate::OlmMachine` for an explanation.
+        let inner = unsafe { ManuallyDrop::take(&mut self.inner) };
+        let _guard = self.runtime.enter();
+        drop(inner);
+    }
 }
 
 #[uniffi::export]
