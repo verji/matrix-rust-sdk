@@ -1428,7 +1428,7 @@ impl OlmMachine {
 
     pub fn dehydrated_devices(&self) -> Arc<DehydratedDevices> {
         DehydratedDevices {
-            inner: self.inner.dehydration_machine(),
+            inner: self.inner.dehydrated_devices(),
             runtime: self.runtime.handle().to_owned(),
         }
         .into()

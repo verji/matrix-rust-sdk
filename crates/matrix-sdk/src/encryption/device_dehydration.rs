@@ -28,7 +28,7 @@ impl DehydratedDevices {
         let account = self.inner.create();
 
         let request =
-            account.keys_for_upload(Self::DEVICE_DISPLAY_NAME.to_owned(), pickle_key).await;
+            account.keys_for_upload(Self::DEVICE_DISPLAY_NAME.to_owned(), pickle_key).await?;
 
         self.client.send(request, Default::default()).await?;
 
@@ -40,10 +40,6 @@ impl DehydratedDevices {
     ) -> Result<dehydrated_device::get_dehydrated_device::unstable::Response> {
         let request = dehydrated_device::get_dehydrated_device::unstable::Request::new();
         Ok(self.client.send(request, Default::default()).await?)
-    }
-
-    pub async fn resume_rehydration(&self) -> Result<()> {
-        todo!()
     }
 
     async fn get_events(

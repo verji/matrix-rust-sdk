@@ -22,7 +22,9 @@ use matrix_sdk_base::crypto::ScanError;
 use matrix_sdk_base::crypto::{
     CryptoStoreError, DecryptorError, KeyExportError, MegolmError, OlmError,
 };
-use matrix_sdk_base::{Error as SdkBaseError, RoomState, StoreError};
+use matrix_sdk_base::{
+    crypto::dehydrated_machine::DehydrationError, Error as SdkBaseError, RoomState, StoreError,
+};
 use reqwest::Error as ReqwestError;
 use ruma::{
     api::{
@@ -209,6 +211,11 @@ pub enum Error {
     #[cfg(feature = "e2e-encryption")]
     #[error(transparent)]
     MegolmError(#[from] MegolmError),
+
+    /// An error ocured while trying to dehydrated or rehydrate a device.
+    #[cfg(feature = "e2e-encryption")]
+    #[error(transparent)]
+    Dehydration(#[from] DehydrationError),
 
     /// An error occurred during decryption.
     #[cfg(feature = "e2e-encryption")]

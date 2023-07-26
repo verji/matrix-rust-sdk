@@ -958,7 +958,7 @@ impl Encryption {
                 .await
                 .as_ref()
                 .expect("We should have an Olm Machine once we try to dehydrate a device")
-                .dehydration_machine(),
+                .dehydrated_devices(),
             client: self.client.to_owned(),
         }
     }

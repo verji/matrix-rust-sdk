@@ -51,7 +51,7 @@ use tracing::{
 };
 use vodozemac::{
     megolm::{DecryptionError, SessionOrdering},
-    Curve25519PublicKey, Ed25519Signature,
+    Curve25519PublicKey, Ed25519Signature, PickleError,
 };
 
 #[cfg(feature = "backups_v1")]
@@ -179,7 +179,7 @@ impl OlmMachine {
         pickle_key: &[u8; 32],
         device_id: &DeviceId,
         device_data: Raw<DehydratedDeviceData>,
-    ) -> StoreResult<OlmMachine> {
+    ) -> Result<OlmMachine, PickleError> {
         let account =
             ReadOnlyAccount::rehydrate(pickle_key, self.user_id(), device_id, device_data).await?;
 
@@ -1921,7 +1921,7 @@ impl OlmMachine {
         Ok(true)
     }
 
-    pub fn dehydration_machine(&self) -> DehydratedDevices {
+    pub fn dehydrated_devices(&self) -> DehydratedDevices {
         DehydratedDevices { inner: self.to_owned() }
     }
 

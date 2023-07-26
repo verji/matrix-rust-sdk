@@ -75,7 +75,8 @@ impl DehydratedDevice {
     ) -> UploadDehydratedDeviceRequest {
         let mut key: [u8; 32] = pickle_key.try_into().unwrap();
 
-        let request = self.runtime.block_on(self.inner.keys_for_upload(device_display_name, &key));
+        let request =
+            self.runtime.block_on(self.inner.keys_for_upload(device_display_name, &key)).unwrap();
 
         key.zeroize();
 

@@ -19,7 +19,7 @@ default = []
 automatic-room-key-forwarding = []
 js = ["ruma/js", "vodozemac/js"]
 qrcode = ["dep:matrix-sdk-qrcode"]
-backups_v1 = ["dep:bs58", "dep:cbc", "dep:hkdf"]
+backups_v1 = ["dep:bs58", "dep:cbc"]
 message-ids = ["dep:ulid"]
 experimental-algorithms = []
 
@@ -41,7 +41,7 @@ dashmap = { workspace = true }
 eyeball = { workspace = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
-hkdf = { version = "0.12.3", optional = true }
+hkdf = "0.12.3"
 hmac = "0.12.1"
 http = { workspace = true, optional = true } # feature = testing only
 itertools = { workspace = true }
