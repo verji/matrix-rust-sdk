@@ -14,6 +14,7 @@ rustls-tls = ["matrix-sdk/rustls-tls"]
 testing = []
 
 [dependencies]
+async_cell = "0.2.2"
 async-once-cell = "0.5.2"
 async-rx = { workspace = true }
 async-std = { version = "1.12.0", features = ["unstable"] }
@@ -40,7 +41,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
-tokio-stream = "0.1.14"
 tracing = { workspace = true, features = ["attributes"] }
 unicode-normalization = "0.1.22"
 
