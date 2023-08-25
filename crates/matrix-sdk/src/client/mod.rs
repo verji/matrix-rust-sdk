@@ -147,12 +147,18 @@ pub enum SessionChange {
     TokensRefreshed,
 }
 
+#[cfg(target_arch = "wasm32")]
+type RefCounted<T> = std::rc::Rc<T>;
+
+#[cfg(not(target_arch = "wasm32"))]
+type RefCounted<T> = Arc<T>;
+
 /// An async/await enabled Matrix client.
 ///
 /// All of the state is held in an `Arc` so the `Client` can be cloned freely.
 #[derive(Clone)]
 pub struct Client {
-    pub(crate) inner: Arc<ClientInner>,
+    pub(crate) inner: RefCounted<ClientInner>,
 }
 
 pub(crate) struct ClientInner {
@@ -2041,7 +2047,7 @@ impl Client {
     /// Create a new specialized `Client` that can process notifications.
     pub async fn notification_client(&self) -> Result<Client> {
         let client = Client {
-            inner: Arc::new(ClientInner::new(
+            inner: RefCounted::new(ClientInner::new(
                 self.inner.homeserver.read().await.clone(),
                 self.inner.authentication_server_info.clone(),
                 #[cfg(feature = "experimental-sliding-sync")]

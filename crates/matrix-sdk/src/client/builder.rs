@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::{fmt, sync::Arc};
+use std::fmt;
 
 use matrix_sdk_base::{store::StoreConfig, BaseClient};
 use ruma::{
@@ -24,7 +24,7 @@ use thiserror::Error;
 use tracing::{debug, field::debug, instrument, Span};
 use url::Url;
 
-use super::{Client, ClientInner};
+use super::{Client, ClientInner, RefCounted};
 #[cfg(not(target_arch = "wasm32"))]
 use crate::http_client::HttpSettings;
 use crate::{config::RequestConfig, error::RumaApiError, http_client::HttpClient, HttpError};
@@ -449,7 +449,7 @@ impl ClientBuilder {
 
         let homeserver = Url::parse(&homeserver)?;
 
-        let inner = Arc::new(ClientInner::new(
+        let inner = RefCounted::new(ClientInner::new(
             homeserver,
             authentication_server_info,
             #[cfg(feature = "experimental-sliding-sync")]
