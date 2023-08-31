@@ -58,7 +58,7 @@ use crate::{
 
 #[derive(Clone)]
 pub(in crate::timeline) struct TimelineInnerStateLock {
-    inner: Arc<Mutex<TimelineInnerState>>,
+    pub(super) inner: Arc<Mutex<TimelineInnerState>>,
     lock_release_ob: SharedObservable<()>,
 }
 

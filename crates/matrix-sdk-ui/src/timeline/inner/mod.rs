@@ -14,9 +14,13 @@
 
 #[cfg(feature = "e2e-encryption")]
 use std::collections::BTreeSet;
-use std::{fmt, sync::Arc};
+use std::{
+    fmt, mem,
+    pin::Pin,
+    sync::Arc,
+    task::{ready, Context, Poll},
+};
 
-use async_rx::StreamExt as _;
 use eyeball_im::{ObservableVectorEntry, VectorDiff, VectorSubscriber};
 use eyeball_im_util::{FilterMapVectorSubscriber, VectorExt};
 use futures_core::Stream;
@@ -29,6 +33,7 @@ use matrix_sdk::{
     sync::{JoinedRoom, Timeline},
     Error, Result, Room,
 };
+use pin_project_lite::pin_project;
 #[cfg(test)]
 use ruma::events::receipt::ReceiptEventContent;
 #[cfg(all(test, feature = "e2e-encryption"))]
@@ -46,6 +51,8 @@ use ruma::{
     },
     EventId, OwnedEventId, OwnedTransactionId, TransactionId, UserId,
 };
+use tokio::sync::Mutex;
+use tokio_util::sync::ReusableBoxFuture;
 use tracing::{debug, error, field::debug, info, instrument, trace, warn};
 #[cfg(feature = "e2e-encryption")]
 use tracing::{field, info_span, Instrument as _};
@@ -159,7 +166,8 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         &self,
     ) -> (Vector<Arc<TimelineItem>>, impl Stream<Item = Vec<VectorDiff<Arc<TimelineItem>>>>) {
         let (items, stream) = self.subscribe().await;
-        let stream = stream.batch_with(self.state.subscribe_lock_release());
+        let stream =
+            BatchWith::new(stream, self.state.subscribe_lock_release(), self.state.inner.clone());
         (items, stream)
     }
 
@@ -1075,4 +1083,78 @@ async fn fetch_replied_to_event(
         Err(e) => TimelineDetails::Error(Arc::new(e)),
     };
     Ok(res)
+}
+
+pin_project! {
+    /// Stream adapter produced by [`StreamExt::batch_with`].
+    pub struct BatchWith<S1: Stream, S2> {
+        #[pin]
+        primary_stream: S1,
+        #[pin]
+        batch_done_stream: S2,
+        sync: ReusableBoxFuture<'static, Arc<Mutex<TimelineInnerState>>>,
+        batch: Vec<S1::Item>,
+    }
+}
+
+impl<S1: Stream, S2> BatchWith<S1, S2> {
+    fn new(
+        primary_stream: S1,
+        batch_done_stream: S2,
+        lock: Arc<Mutex<TimelineInnerState>>,
+    ) -> Self {
+        Self {
+            primary_stream,
+            batch_done_stream,
+            sync: ReusableBoxFuture::new(make_future(lock)),
+            batch: Vec::new(),
+        }
+    }
+}
+
+async fn make_future(mtx: Arc<Mutex<TimelineInnerState>>) -> Arc<Mutex<TimelineInnerState>> {
+    _ = mtx.lock().await;
+    mtx
+}
+
+impl<S1, S2> Stream for BatchWith<S1, S2>
+where
+    S1: Stream,
+    S2: Stream<Item = ()>,
+{
+    type Item = Vec<S1::Item>;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+        loop {
+            match this.primary_stream.as_mut().poll_next(cx) {
+                // Primary stream produced a new item
+                Poll::Ready(Some(item)) => this.batch.push(item),
+                // Primary stream is closed, don't wait for batch_done_stream
+                Poll::Ready(None) => {
+                    let has_pending_items = !this.batch.is_empty();
+                    return Poll::Ready(has_pending_items.then(|| mem::take(this.batch)));
+                }
+                // Primary stream is pending (and this task is scheduled for wakeup on new items)
+                Poll::Pending => break,
+            }
+        }
+
+        // Primary stream is pending, check the batch_done_stream
+        ready!(this.batch_done_stream.poll_next(cx));
+
+        // batch_done_stream produced an item …
+        if this.batch.is_empty() {
+            // … but we didn't queue any items from the primary stream.
+            Poll::Pending
+        } else {
+            // … and we have some queued items.
+
+            // Make sure the state is not currently locked
+            let mtx = ready!(this.sync.poll(cx));
+            this.sync.set(make_future(mtx));
+
+            Poll::Ready(Some(mem::take(this.batch)))
+        }
+    }
 }
