@@ -19,8 +19,8 @@ use matrix_sdk_ui::room_list_service::filters::{
 use tokio::sync::RwLock;
 
 use crate::{
-    error::ClientError, room::Room, room_info::RoomInfo, timeline::EventTimelineItem, TaskHandle,
-    RUNTIME,
+    error::ClientError, helpers::run_in_tokio_task, room::Room, room_info::RoomInfo,
+    timeline::EventTimelineItem, TaskHandle, RUNTIME,
 };
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -105,21 +105,30 @@ impl RoomListService {
     }
 
     async fn all_rooms(self: Arc<Self>) -> Result<Arc<RoomList>, RoomListError> {
-        Ok(Arc::new(RoomList {
-            room_list_service: self.clone(),
-            inner: Arc::new(self.inner.all_rooms().await.map_err(RoomListError::from)?),
-        }))
+        run_in_tokio_task(async move {
+            Ok(Arc::new(RoomList {
+                room_list_service: self.clone(),
+                inner: Arc::new(self.inner.all_rooms().await.map_err(RoomListError::from)?),
+            }))
+        })
+        .await
     }
 
     async fn invites(self: Arc<Self>) -> Result<Arc<RoomList>, RoomListError> {
-        Ok(Arc::new(RoomList {
-            room_list_service: self.clone(),
-            inner: Arc::new(self.inner.invites().await.map_err(RoomListError::from)?),
-        }))
+        run_in_tokio_task(async move {
+            Ok(Arc::new(RoomList {
+                room_list_service: self.clone(),
+                inner: Arc::new(self.inner.invites().await.map_err(RoomListError::from)?),
+            }))
+        })
+        .await
     }
 
-    async fn apply_input(&self, input: RoomListInput) -> Result<(), RoomListError> {
-        self.inner.apply_input(input.into()).await.map(|_| ()).map_err(Into::into)
+    async fn apply_input(self: Arc<Self>, input: RoomListInput) -> Result<(), RoomListError> {
+        run_in_tokio_task(async move {
+            self.inner.apply_input(input.into()).await.map(|_| ()).map_err(Into::into)
+        })
+        .await
     }
 
     fn sync_indicator(
@@ -445,15 +454,18 @@ impl RoomListItem {
     ///
     /// Be careful that building a `Room` builds its entire `Timeline` at the
     /// same time.
-    async fn full_room(&self) -> Arc<Room> {
-        Arc::new(Room::with_timeline(
-            self.inner.inner_room().clone(),
-            Arc::new(RwLock::new(Some(self.inner.timeline().await))),
-        ))
+    async fn full_room(self: Arc<Self>) -> Arc<Room> {
+        run_in_tokio_task(async move {
+            Arc::new(Room::with_timeline(
+                self.inner.inner_room().clone(),
+                Arc::new(RwLock::new(Some(self.inner.timeline().await))),
+            ))
+        })
+        .await
     }
 
     // Temporary workaround for coroutine leaks on Kotlin.
-    fn full_room_blocking(&self) -> Arc<Room> {
+    fn full_room_blocking(self: Arc<Self>) -> Arc<Room> {
         RUNTIME.block_on(async move { self.full_room().await })
     }
 
