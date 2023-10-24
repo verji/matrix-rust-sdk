@@ -102,7 +102,7 @@ async fn redact_replied_to_event() {
 
     let first_item_again =
         assert_next_matches!(stream, VectorDiff::Set { index: 0, value } => value);
-    assert_matches!(first_item_again.content(), TimelineItemContent::RedactedMessage);
+    assert_matches!(first_item_again.content(), TimelineItemContent::RedactedMessage(_));
     assert_matches!(first_item_again.original_json(), None);
 
     let second_item_again =
@@ -110,7 +110,7 @@ async fn redact_replied_to_event() {
     let message = second_item_again.content().as_message().unwrap();
     let in_reply_to = message.in_reply_to().unwrap();
     let replied_to_event = assert_matches!(&in_reply_to.event, TimelineDetails::Ready(val) => val);
-    assert_matches!(replied_to_event.content(), TimelineItemContent::RedactedMessage);
+    assert_matches!(replied_to_event.content(), TimelineItemContent::RedactedMessage(_));
 }
 
 #[async_test]

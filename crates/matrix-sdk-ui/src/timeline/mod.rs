@@ -536,7 +536,7 @@ impl Timeline {
             TimelineItemContent::Message(msg) => {
                 AnyMessageLikeEventContent::RoomMessage(msg.into())
             }
-            TimelineItemContent::RedactedMessage => {
+            TimelineItemContent::RedactedMessage(_) => {
                 error_return!("Invalid state: attempting to retry a redacted message");
             }
             TimelineItemContent::Sticker(sticker) => {

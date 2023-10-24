@@ -97,6 +97,7 @@ pub(super) enum TimelineEventKind {
     },
     RedactedMessage {
         event_type: MessageLikeEventType,
+        reaction_sender: Option<OwnedUserId>,
     },
     Redaction {
         redacts: OwnedEventId,
@@ -318,9 +319,9 @@ impl<'a, 'o> TimelineEventHandler<'a, 'o> {
                 }
             },
 
-            TimelineEventKind::RedactedMessage { event_type } => {
+            TimelineEventKind::RedactedMessage { event_type, redaction_sender } => {
                 if event_type != MessageLikeEventType::Reaction {
-                    self.add(should_add, TimelineItemContent::RedactedMessage);
+                    self.add(should_add, TimelineItemContent::redacted_message(redaction_sender));
                 }
             }
 
@@ -440,7 +441,7 @@ impl<'a, 'o> TimelineEventHandler<'a, 'o> {
 
             // Handling of reactions on redacted events is an open question.
             // For now, ignore reactions on redacted events like Element does.
-            if let TimelineItemContent::RedactedMessage = event_item.content() {
+            if let TimelineItemContent::RedactedMessage(_) = event_item.content() {
                 debug!("Ignoring reaction on redacted event");
                 return;
             } else {
@@ -672,7 +673,7 @@ impl<'a, 'o> TimelineEventHandler<'a, 'o> {
                 return None;
             }
 
-            if let TimelineItemContent::RedactedMessage = &event_item.content {
+            if let TimelineItemContent::RedactedMessage(_) = &event_item.content {
                 debug!("event item is already redacted");
                 return None;
             }
@@ -770,7 +771,7 @@ impl<'a, 'o> TimelineEventHandler<'a, 'o> {
             .into(),
             Flow::Remote { event_id, raw_event, position, .. } => {
                 // Drop pending reactions if the message is redacted.
-                if let TimelineItemContent::RedactedMessage = content {
+                if let TimelineItemContent::RedactedMessage(_) = content {
                     if !reactions.is_empty() {
                         reactions = BundledReactions::default();
                     }

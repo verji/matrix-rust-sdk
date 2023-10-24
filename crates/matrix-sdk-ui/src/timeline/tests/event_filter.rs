@@ -78,7 +78,7 @@ async fn default_filter() {
 
     timeline.handle_live_redaction(&BOB, second_event_id).await;
     let item = assert_next_matches!(stream, VectorDiff::Set { index: 2, value } => value);
-    assert_matches!(item.as_event().unwrap().content(), TimelineItemContent::RedactedMessage);
+    assert_matches!(item.as_event().unwrap().content(), TimelineItemContent::RedactedMessage(_));
 
     // TODO: After adding raw timeline items, check for one here.
 

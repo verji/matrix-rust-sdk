@@ -34,8 +34,8 @@ mod remote;
 pub use self::{
     content::{
         AnyOtherFullStateEventContent, EncryptedMessage, InReplyToDetails, MemberProfileChange,
-        MembershipChange, Message, OtherState, RepliedToEvent, RoomMembershipChange, Sticker,
-        TimelineItemContent,
+        MembershipChange, Message, OtherState, RedactedMessage, RepliedToEvent,
+        RoomMembershipChange, Sticker, TimelineItemContent,
     },
     local::EventSendState,
     reactions::{BundledReactions, ReactionGroup},

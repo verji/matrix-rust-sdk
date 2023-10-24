@@ -47,7 +47,8 @@ use ruma::{
         space::{child::SpaceChildEventContent, parent::SpaceParentEventContent},
         sticker::StickerEventContent,
         AnyFullStateEventContent, AnySyncMessageLikeEvent, AnySyncTimelineEvent,
-        BundledMessageLikeRelations, FullStateEventContent, MessageLikeEventType, StateEventType,
+        BundledMessageLikeRelations, FullStateEventContent, MessageLikeEventType, RedactedUnsigned,
+        StateEventType,
     },
     OwnedDeviceId, OwnedMxcUri, OwnedUserId, RoomVersionId, UserId,
 };
@@ -66,7 +67,7 @@ pub enum TimelineItemContent {
     Message(Message),
 
     /// A redacted message.
-    RedactedMessage,
+    RedactedMessage(RedactedMessage),
 
     /// An `m.sticker` event.
     Sticker(Sticker),
@@ -142,6 +143,10 @@ impl TimelineItemContent {
         }
     }
 
+    pub(crate) fn redacted_message(redaction_sender: OwnedUserId) -> Self {
+        Self::RedactedMessage(RedactedMessage::new(redaction_sender))
+    }
+
     /// Given some message content that is from an event that we have already
     /// determined is suitable for use as a latest event in a message preview,
     /// extract its contents and wrap it as a `TimelineItemContent`.
@@ -164,7 +169,9 @@ impl TimelineItemContent {
                 let timeline_items = Vector::new();
                 Self::Message(Message::from_event(event_content, relations, &timeline_items))
             }
-            SyncRoomMessageEvent::Redacted(_) => Self::RedactedMessage,
+            SyncRoomMessageEvent::Redacted(event) => {
+                Self::from_redacted_message_unsigned(&event.unsigned)
+            }
         }
     }
 
@@ -175,8 +182,14 @@ impl TimelineItemContent {
             SyncUnstablePollStartEvent::Original(event) => Self::Poll(PollState::new(
                 NewUnstablePollStartEventContent::new(event.content.poll_start().clone()),
             )),
-            SyncUnstablePollStartEvent::Redacted(_) => Self::RedactedMessage,
+            SyncUnstablePollStartEvent::Redacted(event) => {
+                Self::from_redacted_message_unsigned(&event.unsigned)
+            }
         }
+    }
+
+    fn from_redacted_message_unsigned(unsigned: &RedactedUnsigned) -> Self {
+        Self::redacted_message(unsigned.redacted_because.sender.clone())
     }
 
     /// If `self` is of the [`Message`][Self::Message] variant, return the inner
@@ -209,7 +222,7 @@ impl TimelineItemContent {
     pub(crate) fn debug_string(&self) -> &'static str {
         match self {
             Self::Message(_) => "a message",
-            Self::RedactedMessage => "a redacted messages",
+            Self::RedactedMessage(_) => "a redacted messages",
             Self::Sticker(_) => "a sticker",
             Self::UnableToDecrypt(_) => "a poll",
             Self::MembershipChange(_) => "a membership change",
@@ -293,16 +306,26 @@ impl TimelineItemContent {
 
     pub(in crate::timeline) fn redact(&self, room_version: &RoomVersionId) -> Self {
         match self {
-            Self::Message(_)
-            | Self::RedactedMessage
-            | Self::Sticker(_)
-            | Self::Poll(_)
-            | Self::UnableToDecrypt(_) => Self::RedactedMessage,
+            Self::RedactedMessage(inner) => Self::RedactedMessage(inner.clone()),
+            Self::Message(_) | Self::Sticker(_) | Self::Poll(_) | Self::UnableToDecrypt(_) => {
+                Self::RedactedMessage
+            }
             Self::MembershipChange(ev) => Self::MembershipChange(ev.redact(room_version)),
             Self::ProfileChange(ev) => Self::ProfileChange(ev.redact()),
             Self::OtherState(ev) => Self::OtherState(ev.redact(room_version)),
             Self::FailedToParseMessageLike { .. } | Self::FailedToParseState { .. } => self.clone(),
         }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RedactedMessage {
+    redaction_sender: OwnedUserId,
+}
+
+impl RedactedMessage {
+    pub fn new(redaction_sender: OwnedUserId) -> Self {
+        Self { redaction_sender }
     }
 }
 
