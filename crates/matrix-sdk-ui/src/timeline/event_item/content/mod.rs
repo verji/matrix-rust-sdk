@@ -112,9 +112,7 @@ impl TimelineItemContent {
     /// If the supplied event is suitable to be used as a `latest_event` in a
     /// message preview, extract its contents and wrap it as a
     /// `TimelineItemContent`.
-    pub(crate) fn from_latest_event_content(
-        event: AnySyncTimelineEvent,
-    ) -> Option<TimelineItemContent> {
+    pub(crate) fn from_latest_event_content(event: AnySyncTimelineEvent) -> Option<Self> {
         match is_suitable_for_latest_event(&event) {
             PossibleLatestEvent::YesRoomMessage(m) => {
                 Some(Self::from_suitable_latest_event_content(m))
@@ -147,7 +145,7 @@ impl TimelineItemContent {
     /// Given some message content that is from an event that we have already
     /// determined is suitable for use as a latest event in a message preview,
     /// extract its contents and wrap it as a `TimelineItemContent`.
-    fn from_suitable_latest_event_content(event: &SyncRoomMessageEvent) -> TimelineItemContent {
+    fn from_suitable_latest_event_content(event: &SyncRoomMessageEvent) -> Self {
         match event {
             SyncRoomMessageEvent::Original(event) => {
                 // Grab the content of this event
@@ -164,28 +162,20 @@ impl TimelineItemContent {
                 // `Message::from_event` marks the original event as `Unavailable` if it can't
                 // be found inside the timeline_items.
                 let timeline_items = Vector::new();
-                TimelineItemContent::Message(Message::from_event(
-                    event_content,
-                    relations,
-                    &timeline_items,
-                ))
+                Self::Message(Message::from_event(event_content, relations, &timeline_items))
             }
-            SyncRoomMessageEvent::Redacted(_) => TimelineItemContent::RedactedMessage,
+            SyncRoomMessageEvent::Redacted(_) => Self::RedactedMessage,
         }
     }
 
     /// Extracts a `TimelineItemContent` from a poll start event for use as a
     /// latest event in a message preview.
-    fn from_suitable_latest_poll_event_content(
-        event: &SyncUnstablePollStartEvent,
-    ) -> TimelineItemContent {
+    fn from_suitable_latest_poll_event_content(event: &SyncUnstablePollStartEvent) -> Self {
         match event {
-            SyncUnstablePollStartEvent::Original(event) => {
-                TimelineItemContent::Poll(PollState::new(NewUnstablePollStartEventContent::new(
-                    event.content.poll_start().clone(),
-                )))
-            }
-            SyncUnstablePollStartEvent::Redacted(_) => TimelineItemContent::RedactedMessage,
+            SyncUnstablePollStartEvent::Original(event) => Self::Poll(PollState::new(
+                NewUnstablePollStartEventContent::new(event.content.poll_start().clone()),
+            )),
+            SyncUnstablePollStartEvent::Redacted(_) => Self::RedactedMessage,
         }
     }
 
@@ -218,16 +208,17 @@ impl TimelineItemContent {
     #[cfg(not(tarpaulin_include))] // debug-logging functionality
     pub(crate) fn debug_string(&self) -> &'static str {
         match self {
-            TimelineItemContent::Message(_) => "a message",
-            TimelineItemContent::RedactedMessage => "a redacted messages",
-            TimelineItemContent::Sticker(_) => "a sticker",
-            TimelineItemContent::UnableToDecrypt(_) => "a poll",
-            TimelineItemContent::MembershipChange(_) => "a membership change",
-            TimelineItemContent::ProfileChange(_) => "a profile change",
-            TimelineItemContent::OtherState(_) => "a state event",
-            TimelineItemContent::FailedToParseMessageLike { .. }
-            | TimelineItemContent::FailedToParseState { .. } => "an event that couldn't be parsed",
-            TimelineItemContent::Poll(_) => "a poll",
+            Self::Message(_) => "a message",
+            Self::RedactedMessage => "a redacted messages",
+            Self::Sticker(_) => "a sticker",
+            Self::UnableToDecrypt(_) => "a poll",
+            Self::MembershipChange(_) => "a membership change",
+            Self::ProfileChange(_) => "a profile change",
+            Self::OtherState(_) => "a state event",
+            Self::FailedToParseMessageLike { .. } | Self::FailedToParseState { .. } => {
+                "an event that couldn't be parsed"
+            }
+            Self::Poll(_) => "a poll",
         }
     }
 
