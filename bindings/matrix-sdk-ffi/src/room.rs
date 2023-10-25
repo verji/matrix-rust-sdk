@@ -285,7 +285,7 @@ impl Room {
         }
     }
 
-    pub async fn add_timeline_listener_blocking(
+    pub fn add_timeline_listener_blocking(
         self: Arc<Self>,
         listener: Box<dyn TimelineListener>,
     ) -> RoomTimelineListenerResult {
