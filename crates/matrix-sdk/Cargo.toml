@@ -55,7 +55,7 @@ experimental-sliding-sync = [
     "reqwest/gzip",
     "dep:eyeball-im-util",
 ]
-experimental-widgets = ["dep:language-tags", "dep:uuid"]
+experimental-widgets = ["dep:language-tags", "dep:phf", "dep:uuid"]
 
 docsrs = ["e2e-encryption", "sqlite", "sso-login", "qrcode", "image-proc"]
 
@@ -89,6 +89,7 @@ matrix-sdk-indexeddb = { version = "0.2.0", path = "../matrix-sdk-indexeddb", de
 matrix-sdk-sqlite = { version = "0.1.0", path = "../matrix-sdk-sqlite", default-features = false, optional = true }
 mime = "0.3.16"
 mime2ext = "0.1.52"
+phf = { version = "0.11.2", optional = true, features = ["macros"] }
 rand = { workspace = true , optional = true }
 ruma = { workspace = true, features = ["rand", "unstable-msc2448", "unstable-msc2965", "unstable-msc3930", "unstable-msc3245-v1-compat"] }
 serde = { workspace = true }

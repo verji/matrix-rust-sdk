@@ -19,7 +19,7 @@ use serde::{de, Deserialize, Deserializer};
 use serde_json::value::RawValue as RawJsonValue;
 use uuid::Uuid;
 
-use super::{from_widget::FromWidgetRequest, to_widget::ToWidgetResponse};
+use super::to_widget::ToWidgetResponse;
 use crate::widget::Capabilities;
 
 /// Incoming event that the client API must process.
@@ -63,6 +63,12 @@ pub(super) struct IncomingWidgetMessage {
     pub(super) widget_id: String,
     pub(super) request_id: String,
     pub(super) kind: IncomingWidgetMessageKind,
+}
+
+#[derive(Deserialize)]
+pub(super) struct FromWidgetRequest {
+    pub(super) action: String,
+    pub(super) data: Box<RawJsonValue>,
 }
 
 pub(super) enum IncomingWidgetMessageKind {

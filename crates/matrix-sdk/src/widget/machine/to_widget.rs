@@ -65,7 +65,6 @@ pub(super) struct ToWidgetResponse {
     pub(super) action: String,
 
     /// The data from the original request.
-    #[allow(dead_code)]
     #[serde(rename = "data")]
     pub(super) request_data: Box<RawJsonValue>,
 

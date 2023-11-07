@@ -34,10 +34,10 @@ use self::{
         ReadMessageLikeEventRequest, RequestOpenId,
     },
     from_widget::{
-        FromWidgetErrorResponse, FromWidgetRequest, ReadEventRequest, ReadEventResponse,
-        SendEventResponse, SupportedApiVersionsResponse,
+        FromWidgetErrorResponse, ReadEventRequest, ReadEventResponse, SendEventResponse,
+        SupportedApiVersionsResponse,
     },
-    incoming::{IncomingWidgetMessage, IncomingWidgetMessageKind},
+    incoming::{FromWidgetRequest, IncomingWidgetMessage, IncomingWidgetMessageKind},
     openid::{OpenIdResponse, OpenIdState},
     pending::{PendingRequests, RequestLimits},
     to_widget::{

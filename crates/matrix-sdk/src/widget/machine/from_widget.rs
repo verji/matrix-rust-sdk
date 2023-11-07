@@ -14,26 +14,45 @@
 
 use std::fmt;
 
+use phf::phf_map;
 use ruma::{
     events::{AnyTimelineEvent, MessageLikeEventType, StateEventType},
     serde::Raw,
     OwnedEventId, RoomId,
 };
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+use serde_json::value::RawValue as RawJsonValue;
 
-use super::SendEventRequest;
+use super::{SendEventRequest, WidgetMachine};
 use crate::widget::StateKeySelector;
 
-#[derive(Deserialize)]
-#[serde(tag = "action", rename_all = "snake_case", content = "data")]
-pub(super) enum FromWidgetRequest {
-    SupportedApiVersions {},
-    ContentLoaded {},
-    #[serde(rename = "get_openid")]
-    GetOpenId {},
-    #[serde(rename = "org.matrix.msc2876.read_events")]
-    ReadEvent(ReadEventRequest),
-    SendEvent(SendEventRequest),
+pub(super) static FROM_WIDGET_REQUEST_HANDLERS: phf::Map<
+    &'static str,
+    fn(&RawJsonValue) -> Box<RawJsonValue>,
+> = phf_map! {
+    "supported_api_versions" => request_handler::<SupportedApiVersionsRequest>(),
+    "content_loaded" => request_handler::<_>(),
+    "get_openid" => request_handler::<_>(),
+    "org.matrix.msc2876.read_events" => request_handler::<_>(),
+    "send_event" => request_handler::<_>()
+};
+
+fn request_handler<T: TypedFromWidgetRequest>(
+) -> fn(&RawJsonValue, &mut WidgetMachine) -> Box<RawJsonValue> {
+    |request_data, machine| match serde_json::from_str(request_data.get()) {
+        Ok(req) => req.handle(machine),
+        Err(e) => serde_json::value::to_raw_value(&FromWidgetErrorResponse::new(e)),
+    }
+}
+
+trait TypedFromWidgetRequest: DeserializeOwned {
+    type ResponseData: Serialize;
+    fn handle(self, machine: &mut WidgetMachine) -> HandleResult<Self>;
+}
+
+enum HandleResult<R: TypedFromWidgetRequest> {
+    Response(R::ResponseData),
+    // ToWidgetRequestHandle?
 }
 
 #[derive(Serialize)]
@@ -52,8 +71,11 @@ struct FromWidgetError {
     message: String,
 }
 
+#[derive(Deserialize)]
+struct SupportedApiVersionsRequest {}
+
 #[derive(Serialize)]
-pub(super) struct SupportedApiVersionsResponse {
+struct SupportedApiVersionsResponse {
     supported_versions: Vec<ApiVersion>,
 }
 
