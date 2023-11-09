@@ -85,7 +85,6 @@ async fn listen_for_backup_state_changes(client: Client) {
             BackupState::Enabled => println!("Backups have been successfully enabled"),
             BackupState::Downloading => println!("Downloading the room keys from the backup"),
             BackupState::Disabling => println!("Disabling the backup"),
-            BackupState::Disabled => println!("Backup has been disabled"),
             BackupState::Creating => println!("Trying to create a new backup"),
         }
     }

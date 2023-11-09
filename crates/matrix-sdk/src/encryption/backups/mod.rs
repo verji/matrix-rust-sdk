@@ -73,9 +73,7 @@ impl<T: 'static + Send + Clone> ChannelObservable<T> {
         let initial_stream = tokio_stream::once(Ok(current_value));
         let broadcast_stream = BroadcastStream::new(self.channel.subscribe());
 
-        let combined = initial_stream.chain(broadcast_stream);
-
-        combined
+        initial_stream.chain(broadcast_stream)
     }
 
     pub fn set(&self, new_value: T) {
@@ -522,7 +520,7 @@ impl Backups {
 
         match self.client.send(request, Default::default()).await {
             Ok(response) => {
-                olm_machine.mark_request_as_sent(&request_id, &response).await?;
+                olm_machine.mark_request_as_sent(request_id, &response).await?;
 
                 let new_counts = olm_machine.backup_machine().room_key_counts().await?;
 
@@ -791,23 +789,23 @@ mod test {
         put_response: ResponseTemplate,
     ) {
         let _post_scope = Mock::given(method("POST"))
-            .and(path(format!("_matrix/client/unstable/room_keys/version")))
+            .and(path("_matrix/client/unstable/room_keys/version"))
             .and(header("authorization", "Bearer 1234"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
               "version": "1"
             })))
             .expect(1)
             .named("POST for the backup creation")
-            .mount_as_scoped(&server)
+            .mount_as_scoped(server)
             .await;
 
         let _put_scope = Mock::given(method("PUT"))
-            .and(path(format!("_matrix/client/unstable/room_keys/keys")))
+            .and(path("_matrix/client/unstable/room_keys/keys"))
             .and(header("authorization", "Bearer 1234"))
             .respond_with(put_response)
             .expect(1)
             .named("POST for the backup creation")
-            .mount_as_scoped(&server)
+            .mount_as_scoped(server)
             .await;
 
         client
@@ -876,7 +874,7 @@ mod test {
 
         {
             let _scope = Mock::given(method("GET"))
-                .and(path(format!("_matrix/client/r0/room_keys/version")))
+                .and(path("_matrix/client/r0/room_keys/version"))
                 .and(header("authorization", "Bearer 1234"))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                     "algorithm": "m.megolm_backup.v1.curve25519-aes-sha2",
@@ -904,7 +902,7 @@ mod test {
 
         {
             let _scope = Mock::given(method("GET"))
-                .and(path(format!("_matrix/client/r0/room_keys/version")))
+                .and(path("_matrix/client/r0/room_keys/version"))
                 .and(header("authorization", "Bearer 1234"))
                 .respond_with(ResponseTemplate::new(404).set_body_json(json!({
                     "errcode": "M_NOT_FOUND",
@@ -926,7 +924,7 @@ mod test {
 
         {
             let _scope = Mock::given(method("GET"))
-                .and(path(format!("_matrix/client/r0/room_keys/version")))
+                .and(path("_matrix/client/r0/room_keys/version"))
                 .and(header("authorization", "Bearer 1234"))
                 .respond_with(ResponseTemplate::new(429).set_body_json(json!({
                     "errcode": "M_LIMIT_EXCEEDED",
@@ -944,7 +942,7 @@ mod test {
 
         {
             let _scope = Mock::given(method("GET"))
-                .and(path(format!("_matrix/client/r0/room_keys/version")))
+                .and(path("_matrix/client/r0/room_keys/version"))
                 .and(header("authorization", "Bearer 1234"))
                 .respond_with(ResponseTemplate::new(404))
                 .expect(1)
@@ -965,7 +963,7 @@ mod test {
         let client = logged_in_client(Some(server.uri())).await;
 
         Mock::given(method("POST"))
-            .and(path(format!("_matrix/client/unstable/room_keys/version")))
+            .and(path("_matrix/client/unstable/room_keys/version"))
             .and(header("authorization", "Bearer 1234"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
               "version": "1"

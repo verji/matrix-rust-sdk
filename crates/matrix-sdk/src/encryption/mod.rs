@@ -1056,7 +1056,7 @@ impl Encryption {
     /// );
     /// # anyhow::Ok(()) };
     /// ```
-    #[cfg(all(not(target_arch = "wasm32")))]
+    #[cfg(not(target_arch = "wasm32"))]
     pub async fn import_room_keys(
         &self,
         path: PathBuf,

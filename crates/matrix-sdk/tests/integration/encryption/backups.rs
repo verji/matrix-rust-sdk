@@ -65,7 +65,7 @@ async fn mount_once(
         .and(header("authorization", "Bearer 1234"))
         .respond_with(response)
         .expect(1)
-        .mount(&server)
+        .mount(server)
         .await;
 }
 
@@ -383,7 +383,7 @@ async fn setup_backups(client: &Client, server: &wiremock::MockServer) {
     client.encryption().import_room_keys(room_key_path, "1234").await.unwrap();
 
     mount_once(
-        &server,
+        server,
         "POST",
         "_matrix/client/unstable/room_keys/version",
         ResponseTemplate::new(200).set_body_json(json!({ "version": "1"})),
@@ -579,7 +579,7 @@ async fn mock_secret_store_with_backup_key(
             "key": key_id,
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -599,7 +599,7 @@ async fn mock_secret_store_with_backup_key(
             }
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -610,7 +610,7 @@ async fn mock_secret_store_with_backup_key(
             "error": "Account data not found"
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -623,7 +623,7 @@ async fn mock_secret_store_with_backup_key(
             "error": "Account data not found"
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -636,7 +636,7 @@ async fn mock_secret_store_with_backup_key(
             "error": "Account data not found"
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("POST"))
@@ -646,7 +646,7 @@ async fn mock_secret_store_with_backup_key(
             "device_keys": {}
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 
     Mock::given(method("GET"))
@@ -662,7 +662,7 @@ async fn mock_secret_store_with_backup_key(
             }
         })))
         .expect(1..)
-        .mount(&server)
+        .mount(server)
         .await;
 }
 
@@ -803,15 +803,13 @@ async fn enable_from_secret_storage() {
     let task = spawn(async move {
         pin_mut!(room_key_stream);
 
-        while let Some(room_keys) = room_key_stream.next().await {
+        if let Some(room_keys) = room_key_stream.next().await {
             let Ok(room_keys) = room_keys else {
                 panic!("Failed to get an update about room keys being imported from the backup")
             };
 
             let (_, room_key_set) = room_keys.first_key_value().unwrap();
             assert!(room_key_set.contains("64H7XKokIx0ASkYDHZKlT5zd/Zccz/cQspPNdvnNULA"));
-
-            break;
         }
     });
 
@@ -1083,22 +1081,20 @@ async fn enable_from_secret_storage_and_manual_download() {
     let task = spawn(async move {
         pin_mut!(room_key_stream);
 
-        while let Some(room_keys) = room_key_stream.next().await {
+        if let Some(room_keys) = room_key_stream.next().await {
             let Ok(room_keys) = room_keys else {
                 panic!("Failed to get an update about room keys being imported from the backup")
             };
 
             let (_, room_key_set) = room_keys.first_key_value().unwrap();
             assert!(room_key_set.contains("64H7XKokIx0ASkYDHZKlT5zd/Zccz/cQspPNdvnNULA"));
-
-            break;
         }
     });
 
     client
         .encryption()
         .backups()
-        .download_room_keys_for_room(&room_id)
+        .download_room_keys_for_room(room_id)
         .await
         .expect("We should be able to download room keys for a certain room");
 
@@ -1109,15 +1105,13 @@ async fn enable_from_secret_storage_and_manual_download() {
     let task = spawn(async move {
         pin_mut!(room_key_stream);
 
-        while let Some(room_keys) = room_key_stream.next().await {
+        if let Some(room_keys) = room_key_stream.next().await {
             let Ok(room_keys) = room_keys else {
                 panic!("Failed to get an update about room keys being imported from the backup")
             };
 
             let (_, room_key_set) = room_keys.first_key_value().unwrap();
             assert!(room_key_set.contains("D5SdVi/nyxdkl97K6EZrpb5N6GcF3YzmvE9EegkVDns"));
-
-            break;
         }
     });
 
