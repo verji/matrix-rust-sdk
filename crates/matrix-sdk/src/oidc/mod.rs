@@ -1066,8 +1066,8 @@ impl Oidc {
         let metadata = data.metadata.clone();
 
         spawn(async move {
-            tracing::trace!(
-                "Token refresh: attempting to refresh with refresh_token {:?}",
+            trace!(
+                "Token refresh: attempting to refresh with refresh_token {:x}",
                 hash_str(&refresh_token)
             );
 
@@ -1085,8 +1085,12 @@ impl Oidc {
             {
                 Ok(new_tokens) => {
                     trace!(
-                        "Token refresh: new refresh_token: {:?} / access_token: {:?}",
-                        new_tokens.refresh_token.as_deref().map(hash_str),
+                        "Token refresh: new refresh_token: {} / access_token: {:x}",
+                        new_tokens
+                            .refresh_token
+                            .as_deref()
+                            .map(|token| format!("{:x}", hash_str(token)))
+                            .unwrap_or_else(|| "<none>".to_owned()),
                         hash_str(&new_tokens.access_token)
                     );
 
@@ -1478,6 +1482,6 @@ fn rng() -> Result<StdRng, OidcError> {
     StdRng::from_rng(rand::thread_rng()).map_err(OidcError::Rand)
 }
 
-fn hash_str(x: &str) -> impl std::fmt::Debug {
+fn hash_str(x: &str) -> impl std::fmt::LowerHex {
     sha2::Sha256::new().chain_update(x).finalize()
 }
