@@ -24,6 +24,7 @@ mod authentication_service;
 mod chunk_iterator;
 mod client;
 mod client_builder;
+mod encryption;
 mod error;
 mod event;
 mod helpers;
@@ -50,6 +51,7 @@ use matrix_sdk::ruma::events::room::{
 use matrix_sdk_ui::timeline::{BackPaginationStatus, EventItemOrigin};
 
 use self::{
+    encryption::SteadyStateError,
     error::ClientError,
     ruma::{MediaSourceExt, Mentions, RoomMessageEventContentWithoutRelationExt},
     task_handle::TaskHandle,
