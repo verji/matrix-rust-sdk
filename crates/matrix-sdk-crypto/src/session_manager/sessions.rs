@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     sync::{Arc, RwLock as StdRwLock},
     time::Duration,
 };
@@ -35,7 +35,7 @@ use crate::{
     error::OlmResult,
     gossiping::GossipMachine,
     requests::{OutgoingRequest, ToDeviceRequest},
-    store::{Changes, Result as StoreResult, Store, UserKeyQueryResult},
+    store::{Changes, Result as StoreResult, Store},
     types::{events::EventType, EventEncryptionAlgorithm},
     utilities::FailuresCache,
     ReadOnlyDevice,
@@ -63,14 +63,19 @@ pub(crate) struct SessionManager {
     wedged_devices: Arc<StdRwLock<BTreeMap<OwnedUserId, BTreeSet<OwnedDeviceId>>>>,
     key_request_machine: GossipMachine,
     outgoing_to_device_requests: Arc<StdRwLock<BTreeMap<OwnedTransactionId, OutgoingRequest>>>,
+
+    /// Servers that have previously appeared in the `failures` section of a
+    /// `/keys/claim` response.
+    ///
+    /// See also [`crate::identities::IdentityManager::failures`].
     failures: FailuresCache<OwnedServerName>,
+
     failed_devices: Arc<StdRwLock<BTreeMap<OwnedUserId, FailuresCache<OwnedDeviceId>>>>,
 }
 
 impl SessionManager {
     const KEY_CLAIM_TIMEOUT: Duration = Duration::from_secs(10);
     const UNWEDGING_INTERVAL: Duration = Duration::from_secs(60 * 60);
-    const KEYS_QUERY_WAIT_TIME: Duration = Duration::from_secs(5);
 
     pub fn new(
         users_for_key_claim: Arc<StdRwLock<BTreeMap<OwnedUserId, BTreeSet<OwnedDeviceId>>>>,
@@ -161,8 +166,8 @@ impl SessionManager {
             .is_some_and(|d| d.remove(device_id))
         {
             if let Some(device) = self.store.get_device(user_id, device_id).await? {
-                let content = serde_json::to_value(ToDeviceDummyEventContent::new())?;
-                let (_, content) = device.encrypt("m.dummy", content).await?;
+                let (_, content) =
+                    device.encrypt("m.dummy", ToDeviceDummyEventContent::new()).await?;
 
                 let request = ToDeviceRequest::new(
                     device.user_id(),
@@ -184,33 +189,6 @@ impl SessionManager {
         }
 
         Ok(())
-    }
-
-    async fn get_user_devices(
-        &self,
-        user_id: &UserId,
-    ) -> StoreResult<HashMap<OwnedDeviceId, ReadOnlyDevice>> {
-        use UserKeyQueryResult::*;
-
-        let user_devices = self.store.get_readonly_devices_filtered(user_id).await?;
-
-        let user_devices = if user_devices.is_empty() {
-            let cache = self.store.cache().await?;
-            match self
-                .key_request_machine
-                .identity_manager()
-                .key_query_manager
-                .wait_if_user_key_query_pending(cache, Self::KEYS_QUERY_WAIT_TIME, user_id)
-                .await?
-            {
-                WasPending => self.store.get_readonly_devices_filtered(user_id).await?,
-                _ => user_devices,
-            }
-        } else {
-            user_devices
-        };
-
-        Ok(user_devices)
     }
 
     /// Get a key claiming request for the user/device pairs that we are
@@ -247,16 +225,22 @@ impl SessionManager {
         let mut missing: BTreeMap<_, BTreeMap<_, _>> = BTreeMap::new();
         let mut timed_out: BTreeMap<_, BTreeSet<_>> = BTreeMap::new();
 
-        // Add the list of devices that the user wishes to establish sessions
-        // right now.
-        for user_id in users.filter(|u| !self.failures.contains(u.server_name())) {
-            let user_devices = Box::pin(self.get_user_devices(user_id)).await?;
+        let unfailed_users = users.filter(|u| !self.failures.contains(u.server_name()));
 
+        // Get the current list of devices for each user.
+        let devices_by_user = Box::pin(
+            self.key_request_machine
+                .identity_manager()
+                .get_user_devices_for_encryption(unfailed_users),
+        )
+        .await?;
+
+        for (user_id, user_devices) in devices_by_user {
             for (device_id, device) in user_devices {
                 if !(device.supports_olm()) {
                     warn!(
-                        user_id = device.user_id().as_str(),
-                        device_id = device.device_id().as_str(),
+                        user_id = ?device.user_id(),
+                        device_id = ?device.device_id(),
                         algorithms = ?device.algorithms(),
                         "Device doesn't support any of our 1-to-1 E2EE \
                         algorithms, can't establish an Olm session"
@@ -270,7 +254,7 @@ impl SessionManager {
                         true
                     };
 
-                    let is_timed_out = self.is_user_timed_out(user_id, &device_id);
+                    let is_timed_out = self.is_user_timed_out(&user_id, &device_id);
 
                     if is_missing && is_timed_out {
                         timed_out.entry(user_id.to_owned()).or_default().insert(device_id);
@@ -282,8 +266,8 @@ impl SessionManager {
                     }
                 } else {
                     warn!(
-                        user_id = device.user_id().as_str(),
-                        device_id = device.device_id().as_str(),
+                        user_id = ?device.user_id(),
+                        device_id = ?device.device_id(),
                         "Device doesn't have a valid Curve25519 key, \
                         can't establish an Olm session"
                     );
@@ -485,18 +469,15 @@ impl SessionManager {
                 Ok(Some(d)) => d,
                 Ok(None) => {
                     warn!(
-                        user_id = user_id.as_str(),
-                        device_id = device_id.as_str(),
-                        "Tried to create an Olm session but the device is \
-                            unknown",
+                        ?user_id,
+                        ?device_id,
+                        "Tried to create an Olm session but the device is unknown",
                     );
                     continue;
                 }
                 Err(e) => {
                     warn!(
-                        user_id = user_id.as_str(),
-                        device_id = device_id.as_str(),
-                        error = ?e,
+                        ?user_id, ?device_id, error = ?e,
                         "Tried to create an Olm session, but we can't \
                         fetch the device from the store",
                     );
@@ -509,9 +490,7 @@ impl SessionManager {
                 Ok(s) => s,
                 Err(e) => {
                     warn!(
-                        user_id = user_id.as_str(),
-                        device_id = device_id.as_str(),
-                        error = ?e,
+                        ?user_id, ?device_id, error = ?e,
                         "Error creating outbound session"
                     );
 
@@ -576,6 +555,7 @@ mod tests {
         iter,
         ops::Deref,
         sync::{Arc, RwLock as StdRwLock},
+        time::Duration,
     };
 
     use matrix_sdk_test::{async_test, response_from_file};
@@ -587,7 +567,7 @@ mod tests {
             },
             IncomingResponse,
         },
-        device_id, owned_server_name, user_id, DeviceId, UserId,
+        device_id, owned_server_name, user_id, DeviceId, OwnedUserId, UserId,
     };
     use serde_json::json;
     use tokio::sync::Mutex;
@@ -766,6 +746,45 @@ mod tests {
         info!("Key claim request: {:?}", keys_claim_request.one_time_keys);
         let bob_key_claims = keys_claim_request.one_time_keys.get(bob.user_id()).unwrap();
         assert!(bob_key_claims.contains_key(bob_device.device_id()));
+    }
+
+    #[async_test]
+    async fn test_session_creation_does_not_wait_for_keys_query_on_failed_server() {
+        let (manager, identity_manager) = session_manager_test_helper().await;
+
+        // We start tracking Bob's devices.
+        let other_user_id = OwnedUserId::try_from("@bob:example.com").unwrap();
+        {
+            let cache = manager.store.cache().await.unwrap();
+            identity_manager
+                .key_query_manager
+                .synced(&cache)
+                .await
+                .unwrap()
+                .update_tracked_users(iter::once(other_user_id.as_ref()))
+                .await
+                .unwrap();
+        }
+
+        // Do a keys query request, in which Bob's server is a failure.
+        let (key_query_txn_id, _key_query_request) =
+            identity_manager.users_for_key_query().await.unwrap().pop_first().unwrap();
+        let response = KeysQueryResponse::try_from_http_response(response_from_file(
+                &json!({ "device_keys": {}, "failures": { other_user_id.server_name(): "unreachable" }})
+        )).unwrap();
+        identity_manager.receive_keys_query_response(&key_query_txn_id, &response).await.unwrap();
+
+        // Now, an attempt to get the missing sessions should now *not* block. We use a
+        // timeout so that we can detect the call blocking.
+        let result = tokio::time::timeout(
+            Duration::from_millis(10),
+            manager.get_missing_sessions(iter::once(other_user_id.as_ref())),
+        )
+        .await
+        .expect("get_missing_sessions blocked rather than completing quickly")
+        .expect("get_missing_sessions returned an error");
+
+        assert!(result.is_none(), "get_missing_sessions returned Some(...)");
     }
 
     // This test doesn't run on macos because we're modifying the session
