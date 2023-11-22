@@ -19,15 +19,15 @@ use matrix_sdk_test::{async_test, ALICE, BOB, CAROL};
 use ruma::{
     event_id,
     events::{
-        receipt::{ReceiptThread, ReceiptType},
+        receipt::{Receipt, ReceiptThread, ReceiptType},
         room::message::{MessageType, RoomMessageEventContent, SyncRoomMessageEvent},
         AnySyncMessageLikeEvent, AnySyncTimelineEvent,
     },
-    owned_event_id, room_id,
+    owned_event_id, room_id, uint,
 };
 use stream_assert::{assert_next_matches, assert_pending};
 
-use super::TestTimeline;
+use super::{ReadReceiptMap, TestRoomDataProvider, TestTimeline};
 use crate::timeline::inner::TimelineInnerSettings;
 
 fn filter_notice(ev: &AnySyncTimelineEvent) -> bool {
@@ -335,6 +335,7 @@ async fn read_receipts_updates_on_message_decryption() {
     use std::{io::Cursor, iter};
 
     use assert_matches::assert_matches;
+    use assert_matches2::assert_let;
     use matrix_sdk_base::crypto::{decrypt_room_key_export, OlmMachine};
     use ruma::{
         events::room::encrypted::{
@@ -422,11 +423,11 @@ async fn read_receipts_updates_on_message_decryption() {
     // The second event is encrypted and only has Bob's receipt.
     let encrypted_item = assert_next_matches!(stream, VectorDiff::PushBack { value } => value);
     let encrypted_event = encrypted_item.as_event().unwrap();
-    let session_id = assert_matches!(
-        encrypted_event.content(),
-        TimelineItemContent::UnableToDecrypt(
-            EncryptedMessage::MegolmV1AesSha2 { session_id, .. },
-        ) => session_id
+    assert_let!(
+        TimelineItemContent::UnableToDecrypt(EncryptedMessage::MegolmV1AesSha2 {
+            session_id,
+            ..
+        }) = encrypted_event.content()
     );
     assert_eq!(session_id, SESSION_ID);
     assert_eq!(encrypted_event.read_receipts().len(), 1);
@@ -462,4 +463,153 @@ async fn read_receipts_updates_on_message_decryption() {
     assert_next_matches!(stream, VectorDiff::Remove { index: 2 });
 
     assert_pending!(stream);
+}
+
+#[async_test]
+async fn initial_public_unthreaded_receipt() {
+    let event_id = owned_event_id!("$event_with_receipt");
+
+    // Add initial unthreaded public receipt.
+    let mut initial_user_receipts = ReadReceiptMap::new();
+    initial_user_receipts
+        .entry(ReceiptType::Read)
+        .or_default()
+        .entry(ReceiptThread::Unthreaded)
+        .or_default()
+        .insert(
+            ALICE.to_owned(),
+            (event_id.clone(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(uint!(10)))),
+        );
+
+    let timeline = TestTimeline::with_room_data_provider(
+        TestRoomDataProvider::with_initial_user_receipts(initial_user_receipts),
+    )
+    .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
+
+    let (receipt_event_id, _) = timeline.inner.latest_user_read_receipt(*ALICE).await.unwrap();
+    assert_eq!(receipt_event_id, event_id);
+}
+
+#[async_test]
+async fn initial_public_main_thread_receipt() {
+    let event_id = owned_event_id!("$event_with_receipt");
+
+    // Add initial public receipt on the main thread.
+    let mut initial_user_receipts = ReadReceiptMap::new();
+    initial_user_receipts
+        .entry(ReceiptType::Read)
+        .or_default()
+        .entry(ReceiptThread::Main)
+        .or_default()
+        .insert(
+            ALICE.to_owned(),
+            (event_id.clone(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(uint!(10)))),
+        );
+
+    let timeline = TestTimeline::with_room_data_provider(
+        TestRoomDataProvider::with_initial_user_receipts(initial_user_receipts),
+    )
+    .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
+
+    let (receipt_event_id, _) = timeline.inner.latest_user_read_receipt(*ALICE).await.unwrap();
+    assert_eq!(receipt_event_id, event_id);
+}
+
+#[async_test]
+async fn initial_private_unthreaded_receipt() {
+    let event_id = owned_event_id!("$event_with_receipt");
+
+    // Add initial unthreaded private receipt.
+    let mut initial_user_receipts = ReadReceiptMap::new();
+    initial_user_receipts
+        .entry(ReceiptType::ReadPrivate)
+        .or_default()
+        .entry(ReceiptThread::Unthreaded)
+        .or_default()
+        .insert(
+            ALICE.to_owned(),
+            (event_id.clone(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(uint!(10)))),
+        );
+
+    let timeline = TestTimeline::with_room_data_provider(
+        TestRoomDataProvider::with_initial_user_receipts(initial_user_receipts),
+    )
+    .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
+
+    let (receipt_event_id, _) = timeline.inner.latest_user_read_receipt(*ALICE).await.unwrap();
+    assert_eq!(receipt_event_id, event_id);
+}
+
+#[async_test]
+async fn initial_private_main_thread_receipt() {
+    let event_id = owned_event_id!("$event_with_receipt");
+
+    // Add initial private receipt on the main thread.
+    let mut initial_user_receipts = ReadReceiptMap::new();
+    initial_user_receipts
+        .entry(ReceiptType::ReadPrivate)
+        .or_default()
+        .entry(ReceiptThread::Main)
+        .or_default()
+        .insert(
+            ALICE.to_owned(),
+            (event_id.clone(), Receipt::new(ruma::MilliSecondsSinceUnixEpoch(uint!(10)))),
+        );
+
+    let timeline = TestTimeline::with_room_data_provider(
+        TestRoomDataProvider::with_initial_user_receipts(initial_user_receipts),
+    )
+    .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
+
+    let (receipt_event_id, _) = timeline.inner.latest_user_read_receipt(*ALICE).await.unwrap();
+    assert_eq!(receipt_event_id, event_id);
+}
+
+#[async_test]
+async fn clear_read_receipts() {
+    let room_id = room_id!("!room:localhost");
+    let event_a_id = event_id!("$event_a");
+    let event_b_id = event_id!("$event_b");
+
+    let timeline = TestTimeline::new()
+        .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
+
+    let event_a_content = RoomMessageEventContent::text_plain("A");
+    timeline.handle_live_message_event_with_id(*BOB, event_a_id, event_a_content.clone()).await;
+
+    let items = timeline.inner.items().await;
+    assert_eq!(items.len(), 2);
+
+    // Implicit read receipt of Bob.
+    let event_a = items[1].as_event().unwrap();
+    assert_eq!(event_a.read_receipts().len(), 1);
+    assert!(event_a.read_receipts().get(*BOB).is_some());
+
+    // We received a limited timeline.
+    timeline.inner.clear().await;
+
+    // New message via sync.
+    timeline
+        .handle_live_message_event_with_id(
+            *BOB,
+            event_b_id,
+            RoomMessageEventContent::text_plain("B"),
+        )
+        .await;
+    // Old message via back-pagination.
+    timeline
+        .handle_back_paginated_message_event_with_id(*BOB, room_id, event_a_id, event_a_content)
+        .await;
+
+    let items = timeline.inner.items().await;
+    assert_eq!(items.len(), 3);
+
+    // Old implicit read receipt of Bob is gone.
+    let event_a = items[1].as_event().unwrap();
+    assert_eq!(event_a.read_receipts().len(), 0);
+
+    // New implicit read receipt of Bob.
+    let event_b = items[2].as_event().unwrap();
+    assert_eq!(event_b.read_receipts().len(), 1);
+    assert!(event_b.read_receipts().get(*BOB).is_some());
 }

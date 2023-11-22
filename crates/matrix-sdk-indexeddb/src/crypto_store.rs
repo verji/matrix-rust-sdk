@@ -102,6 +102,7 @@ pub struct IndexeddbCryptoStore {
     save_changes_lock: Arc<Mutex<()>>,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for IndexeddbCryptoStore {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IndexeddbCryptoStore").field("name", &self.name).finish()
@@ -532,7 +533,7 @@ impl_crypto_store! {
 
         let account_pickle = if let Some(account) = changes.account {
             *self.static_account.write().unwrap() = Some(account.static_data().clone());
-            Some(account.pickle().await)
+            Some(account.pickle())
         } else {
             None
         };

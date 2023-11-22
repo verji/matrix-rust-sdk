@@ -14,9 +14,12 @@
 
 //! Unit tests (based on private methods) for the timeline API.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, HashMap},
+    sync::Arc,
+};
 
-use assert_matches::assert_matches;
+use assert_matches2::assert_let;
 use async_trait::async_trait;
 use eyeball_im::VectorDiff;
 use futures_core::Stream;
@@ -73,7 +76,11 @@ struct TestTimeline {
 
 impl TestTimeline {
     fn new() -> Self {
-        Self { inner: TimelineInner::new(TestRoomDataProvider), event_builder: EventBuilder::new() }
+        Self::with_room_data_provider(TestRoomDataProvider::default())
+    }
+
+    fn with_room_data_provider(room_data_provider: TestRoomDataProvider) -> Self {
+        Self { inner: TimelineInner::new(room_data_provider), event_builder: EventBuilder::new() }
     }
 
     fn with_settings(mut self, settings: TimelineInnerSettings) -> Self {
@@ -255,8 +262,19 @@ impl TestTimeline {
     }
 }
 
-#[derive(Clone)]
-struct TestRoomDataProvider;
+type ReadReceiptMap =
+    HashMap<ReceiptType, HashMap<ReceiptThread, HashMap<OwnedUserId, (OwnedEventId, Receipt)>>>;
+
+#[derive(Clone, Default)]
+struct TestRoomDataProvider {
+    initial_user_receipts: ReadReceiptMap,
+}
+
+impl TestRoomDataProvider {
+    fn with_initial_user_receipts(initial_user_receipts: ReadReceiptMap) -> Self {
+        Self { initial_user_receipts }
+    }
+}
 
 #[async_trait]
 impl RoomDataProvider for TestRoomDataProvider {
@@ -274,6 +292,19 @@ impl RoomDataProvider for TestRoomDataProvider {
 
     async fn profile_from_latest_event(&self, _latest_event: &LatestEvent) -> Option<Profile> {
         None
+    }
+
+    async fn user_receipt(
+        &self,
+        receipt_type: ReceiptType,
+        thread: ReceiptThread,
+        user_id: &UserId,
+    ) -> Option<(OwnedEventId, Receipt)> {
+        self.initial_user_receipts
+            .get(&receipt_type)
+            .and_then(|thread_map| thread_map.get(&thread))
+            .and_then(|user_map| user_map.get(user_id))
+            .cloned()
     }
 
     async fn read_receipts_for_event(&self, event_id: &EventId) -> IndexMap<OwnedUserId, Receipt> {
@@ -305,10 +336,7 @@ pub(super) async fn assert_event_is_updated(
     event_id: &EventId,
     index: usize,
 ) -> EventTimelineItem {
-    let (i, event) = assert_matches!(
-        stream.next().await,
-        Some(VectorDiff::Set { index, value }) => (index, value)
-    );
+    assert_let!(Some(VectorDiff::Set { index: i, value: event }) = stream.next().await);
     assert_eq!(i, index);
     let event = event.as_event().unwrap();
     assert_eq!(event.event_id().unwrap(), event_id);

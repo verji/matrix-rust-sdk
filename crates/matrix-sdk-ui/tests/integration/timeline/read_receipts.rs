@@ -15,6 +15,7 @@
 use std::time::Duration;
 
 use assert_matches::assert_matches;
+use assert_matches2::assert_let;
 use eyeball_im::VectorDiff;
 use futures_util::StreamExt;
 use matrix_sdk::{config::SyncSettings, room::Receipts};
@@ -126,10 +127,11 @@ async fn read_receipts_updates() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
-    let _day_divider = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: day_divider }) = timeline_stream.next().await);
+    assert!(day_divider.is_day_divider());
 
     // We don't list the read receipt of our own user on events.
-    let first_item = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: first_item }) = timeline_stream.next().await);
     let first_event = first_item.as_event().unwrap();
     assert!(first_event.read_receipts().is_empty());
 
@@ -137,16 +139,18 @@ async fn read_receipts_updates() {
     assert_eq!(own_receipt_event_id, first_event.event_id().unwrap());
 
     // Implicit read receipt of @alice:localhost.
-    let second_item = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: second_item }) = timeline_stream.next().await);
     let second_event = second_item.as_event().unwrap();
     assert_eq!(second_event.read_receipts().len(), 1);
 
     // Read receipt of @alice:localhost is moved to third event.
-    let second_item = assert_matches!(timeline_stream.next().await, Some(VectorDiff::Set { index: 2, value }) => value);
+    assert_let!(
+        Some(VectorDiff::Set { index: 2, value: second_item }) = timeline_stream.next().await
+    );
     let second_event = second_item.as_event().unwrap();
     assert!(second_event.read_receipts().is_empty());
 
-    let third_item = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: third_item }) = timeline_stream.next().await);
     let third_event = third_item.as_event().unwrap();
     assert_eq!(third_event.read_receipts().len(), 1);
 
@@ -214,14 +218,22 @@ async fn read_receipts_updates() {
     let (alice_receipt_event_id, _) = timeline.latest_user_read_receipt(alice).await.unwrap();
     assert_eq!(alice_receipt_event_id, third_event_id);
 
-    // New user with explicit read receipt.
+    // New user with explicit threaded and unthreaded read receipts.
     ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
         EphemeralTestEvent::Custom(json!({
             "content": {
+                second_event_id: {
+                    "m.read": {
+                        bob: {
+                            "ts": 1436451350,
+                        },
+                    },
+                },
                 third_event_id: {
                     "m.read": {
                         bob: {
                             "ts": 1436451550,
+                            "thread_id": "main",
                         },
                     },
                 },
@@ -234,7 +246,9 @@ async fn read_receipts_updates() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
-    let third_item = assert_matches!(timeline_stream.next().await, Some(VectorDiff::Set { index: 3, value }) => value);
+    assert_let!(
+        Some(VectorDiff::Set { index: 3, value: third_item }) = timeline_stream.next().await
+    );
     let third_event = third_item.as_event().unwrap();
     assert_eq!(third_event.read_receipts().len(), 2);
 
@@ -293,10 +307,19 @@ async fn read_receipts_updates_on_filtered_events() {
 
     let own_receipt = timeline.latest_user_read_receipt(own_user_id).await;
     assert_matches!(own_receipt, None);
+    let own_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(own_user_id).await;
+    assert_matches!(own_receipt_timeline_event, None);
     let alice_receipt = timeline.latest_user_read_receipt(*ALICE).await;
     assert_matches!(alice_receipt, None);
+    let alice_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(*ALICE).await;
+    assert_matches!(alice_receipt_timeline_event, None);
     let bob_receipt = timeline.latest_user_read_receipt(*BOB).await;
     assert_matches!(bob_receipt, None);
+    let bob_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(*BOB).await;
+    assert_matches!(bob_receipt_timeline_event, None);
 
     ev_builder.add_joined_room(
         JoinedRoomBuilder::new(room_id)
@@ -339,31 +362,43 @@ async fn read_receipts_updates_on_filtered_events() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
-    let _day_divider = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: day_divider }) = timeline_stream.next().await);
+    assert!(day_divider.is_day_divider());
 
     // We don't list the read receipt of our own user on events.
-    let item_a = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: item_a }) = timeline_stream.next().await);
     let event_a = item_a.as_event().unwrap();
     assert!(event_a.read_receipts().is_empty());
 
     let (own_receipt_event_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
     assert_eq!(own_receipt_event_id, event_a_id);
+    let own_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(own_user_id).await.unwrap();
+    assert_eq!(own_receipt_timeline_event, event_a_id);
 
     // Implicit read receipt of @bob:localhost.
-    let item_a = assert_matches!(timeline_stream.next().await, Some(VectorDiff::Set { index: 1, value }) => value);
+    assert_let!(Some(VectorDiff::Set { index: 1, value: item_a }) = timeline_stream.next().await);
     let event_a = item_a.as_event().unwrap();
     assert_eq!(event_a.read_receipts().len(), 1);
 
+    // Real receipt is on event B.
     let (bob_receipt_event_id, _) = timeline.latest_user_read_receipt(*BOB).await.unwrap();
     assert_eq!(bob_receipt_event_id, event_b_id);
+    // Visible receipt is on event A.
+    let bob_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(*BOB).await.unwrap();
+    assert_eq!(bob_receipt_timeline_event, event_a.event_id().unwrap());
 
     // Implicit read receipt of @alice:localhost.
-    let item_c = assert_matches!(timeline_stream.next().await, Some(VectorDiff::PushBack { value }) => value);
+    assert_let!(Some(VectorDiff::PushBack { value: item_c }) = timeline_stream.next().await);
     let event_c = item_c.as_event().unwrap();
     assert_eq!(event_c.read_receipts().len(), 1);
 
     let (alice_receipt_event_id, _) = timeline.latest_user_read_receipt(*ALICE).await.unwrap();
     assert_eq!(alice_receipt_event_id, event_c_id);
+    let alice_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(*ALICE).await.unwrap();
+    assert_eq!(alice_receipt_timeline_event, event_c_id);
 
     // Read receipt on filtered event.
     ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
@@ -385,8 +420,13 @@ async fn read_receipts_updates_on_filtered_events() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
+    // Real receipt changed to event B.
     let (own_receipt_event_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
     assert_eq!(own_receipt_event_id, event_b_id);
+    // Visible receipt is still on event A.
+    let own_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(own_user_id).await.unwrap();
+    assert_eq!(own_receipt_timeline_event, event_a.event_id().unwrap());
 
     // Update with explicit read receipt.
     ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
@@ -408,16 +448,20 @@ async fn read_receipts_updates_on_filtered_events() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
-    let item_a = assert_matches!(timeline_stream.next().await, Some(VectorDiff::Set { index: 1, value }) => value);
+    assert_let!(Some(VectorDiff::Set { index: 1, value: item_a }) = timeline_stream.next().await);
     let event_a = item_a.as_event().unwrap();
     assert!(event_a.read_receipts().is_empty());
 
-    let item_c = assert_matches!(timeline_stream.next().await, Some(VectorDiff::Set { index: 2, value }) => value);
+    assert_let!(Some(VectorDiff::Set { index: 2, value: item_c }) = timeline_stream.next().await);
     let event_c = item_c.as_event().unwrap();
     assert_eq!(event_c.read_receipts().len(), 2);
 
+    // Both real and visible receipts are now on event C.
     let (bob_receipt_event_id, _) = timeline.latest_user_read_receipt(*BOB).await.unwrap();
     assert_eq!(bob_receipt_event_id, event_c_id);
+    let bob_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(*BOB).await.unwrap();
+    assert_eq!(bob_receipt_timeline_event, event_c_id);
 
     // Private read receipt is updated.
     ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
@@ -439,9 +483,13 @@ async fn read_receipts_updates_on_filtered_events() {
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
     server.reset().await;
 
+    // Both real and visible receipts are now on event C.
     let (own_user_receipt_event_id, _) =
         timeline.latest_user_read_receipt(own_user_id).await.unwrap();
     assert_eq!(own_user_receipt_event_id, event_c_id);
+    let own_receipt_timeline_event =
+        timeline.latest_user_read_receipt_timeline_event_id(own_user_id).await.unwrap();
+    assert_eq!(own_receipt_timeline_event, event_c_id);
 }
 
 #[async_test]
@@ -997,4 +1045,131 @@ async fn send_multiple_receipts() {
     server.reset().await;
 
     timeline.send_multiple_receipts(second_receipts.clone()).await.unwrap();
+}
+
+#[async_test]
+async fn latest_user_read_receipt() {
+    let room_id = room_id!("!a98sd12bjh:example.org");
+    let (client, server) = logged_in_client().await;
+    let sync_settings = SyncSettings::new().timeout(Duration::from_millis(3000));
+
+    let own_user_id = client.user_id().unwrap();
+
+    let event_a_id = event_id!("$event_a");
+    let event_b_id = event_id!("$event_b");
+    let event_c_id = event_id!("$event_c");
+    let event_d_id = event_id!("$event_d");
+    let event_e_id = event_id!("$event_e");
+
+    let mut ev_builder = SyncResponseBuilder::new();
+    ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id));
+
+    mock_sync(&server, ev_builder.build_json_sync_response(), None).await;
+    let _response = client.sync_once(sync_settings.clone()).await.unwrap();
+    server.reset().await;
+
+    let room = client.get_room(room_id).unwrap();
+    let timeline = room.timeline().await;
+    let (items, _) = timeline.subscribe().await;
+
+    assert!(items.is_empty());
+
+    let user_receipt = timeline.latest_user_read_receipt(own_user_id).await;
+    assert_matches!(user_receipt, None);
+
+    // Only private receipt.
+    ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
+        EphemeralTestEvent::Custom(json!({
+            "content": {
+                event_a_id: {
+                    "m.read.private": {
+                        own_user_id: {},
+                    },
+                },
+            },
+            "type": "m.receipt",
+        })),
+    ));
+
+    mock_sync(&server, ev_builder.build_json_sync_response(), None).await;
+    let _response = client.sync_once(sync_settings.clone()).await.unwrap();
+    server.reset().await;
+
+    let (user_receipt_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
+    assert_eq!(user_receipt_id, event_a_id);
+
+    // Private and public receipts without timestamp should return private
+    // receipt.
+    ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
+        EphemeralTestEvent::Custom(json!({
+            "content": {
+                event_b_id: {
+                    "m.read": {
+                        own_user_id: {},
+                    },
+                },
+            },
+            "type": "m.receipt",
+        })),
+    ));
+
+    mock_sync(&server, ev_builder.build_json_sync_response(), None).await;
+    let _response = client.sync_once(sync_settings.clone()).await.unwrap();
+    server.reset().await;
+
+    let (user_receipt_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
+    assert_eq!(user_receipt_id, event_a_id);
+
+    // Public receipt with bigger timestamp.
+    ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
+        EphemeralTestEvent::Custom(json!({
+            "content": {
+                event_c_id: {
+                    "m.read.private": {
+                        own_user_id: {
+                            "ts": 1,
+                        },
+                    },
+                },
+                event_d_id: {
+                    "m.read": {
+                        own_user_id: {
+                            "ts": 10,
+                        },
+                    },
+                },
+            },
+            "type": "m.receipt",
+        })),
+    ));
+
+    mock_sync(&server, ev_builder.build_json_sync_response(), None).await;
+    let _response = client.sync_once(sync_settings.clone()).await.unwrap();
+    server.reset().await;
+
+    let (user_receipt_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
+    assert_eq!(user_receipt_id, event_d_id);
+
+    // Private receipt with bigger timestamp.
+    ev_builder.add_joined_room(JoinedRoomBuilder::new(room_id).add_ephemeral_event(
+        EphemeralTestEvent::Custom(json!({
+            "content": {
+                event_e_id: {
+                    "m.read.private": {
+                        own_user_id: {
+                            "ts": 100,
+                        },
+                    },
+                },
+            },
+            "type": "m.receipt",
+        })),
+    ));
+
+    mock_sync(&server, ev_builder.build_json_sync_response(), None).await;
+    let _response = client.sync_once(sync_settings.clone()).await.unwrap();
+    server.reset().await;
+
+    let (user_receipt_id, _) = timeline.latest_user_read_receipt(own_user_id).await.unwrap();
+    assert_eq!(user_receipt_id, event_e_id);
 }

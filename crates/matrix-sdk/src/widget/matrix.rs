@@ -31,7 +31,7 @@ use ruma::{
     serde::Raw,
     OwnedEventId, RoomId,
 };
-use serde_json::{value::RawValue as RawJsonValue, Value as JsonValue};
+use serde_json::value::RawValue as RawJsonValue;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver};
 use tracing::error;
 
@@ -111,12 +111,12 @@ impl MatrixDriver {
         &self,
         event_type: TimelineEventType,
         state_key: Option<String>,
-        content: JsonValue,
+        content: Box<RawJsonValue>,
     ) -> Result<OwnedEventId> {
         let type_str = event_type.to_string();
         Ok(match state_key {
-            Some(key) => self.room.send_state_event_raw(content, &type_str, &key).await?.event_id,
-            None => self.room.send_raw(content, &type_str, None).await?.event_id,
+            Some(key) => self.room.send_state_event_raw(&type_str, &key, content).await?.event_id,
+            None => self.room.send_raw(&type_str, content).await?.event_id,
         })
     }
 
@@ -124,8 +124,9 @@ impl MatrixDriver {
     /// is dropped, forwarding will be stopped.
     pub(crate) fn events(&self) -> EventReceiver {
         let (tx, rx) = unbounded_channel();
+        let room_id = self.room.room_id().to_owned();
         let handle = self.room.add_event_handler(move |raw: Raw<AnySyncTimelineEvent>| {
-            let _ = tx.send(raw.cast());
+            let _ = tx.send(attach_room_id(&raw, &room_id));
             async {}
         });
 

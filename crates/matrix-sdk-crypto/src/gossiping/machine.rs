@@ -43,10 +43,11 @@ use vodozemac::{megolm::SessionOrdering, Curve25519PublicKey};
 use super::{GossipRequest, GossippedSecret, RequestEvent, RequestInfo, SecretInfo, WaitQueue};
 use crate::{
     error::{EventError, OlmError, OlmResult},
+    identities::IdentityManager,
     olm::{InboundGroupSession, Session},
     requests::{OutgoingRequest, ToDeviceRequest},
     session_manager::GroupSessionCache,
-    store::{Changes, CryptoStoreError, SecretImportError, Store},
+    store::{Changes, CryptoStoreError, SecretImportError, Store, StoreCache},
     types::events::{
         forwarded_room_key::ForwardedRoomKeyContent,
         olm_v1::{DecryptedForwardedRoomKeyEvent, DecryptedSecretSendEvent},
@@ -73,11 +74,13 @@ pub(crate) struct GossipMachineInner {
     wait_queue: WaitQueue,
     users_for_key_claim: Arc<StdRwLock<BTreeMap<OwnedUserId, BTreeSet<OwnedDeviceId>>>>,
     room_key_forwarding_enabled: AtomicBool,
+    identity_manager: IdentityManager,
 }
 
 impl GossipMachine {
     pub fn new(
         store: Store,
+        identity_manager: IdentityManager,
         #[allow(unused)] outbound_group_sessions: GroupSessionCache,
         users_for_key_claim: Arc<StdRwLock<BTreeMap<OwnedUserId, BTreeSet<OwnedDeviceId>>>>,
     ) -> Self {
@@ -94,8 +97,13 @@ impl GossipMachine {
                 wait_queue: WaitQueue::new(),
                 users_for_key_claim,
                 room_key_forwarding_enabled,
+                identity_manager,
             }),
         }
+    }
+
+    pub(crate) fn identity_manager(&self) -> &IdentityManager {
+        &self.inner.identity_manager
     }
 
     #[cfg(feature = "automatic-room-key-forwarding")]
@@ -190,7 +198,10 @@ impl GossipMachine {
 
     /// Handle all the incoming key requests that are queued up and empty our
     /// key request queue.
-    pub async fn collect_incoming_key_requests(&self) -> OlmResult<Vec<Session>> {
+    pub async fn collect_incoming_key_requests(
+        &self,
+        cache: &StoreCache,
+    ) -> OlmResult<Vec<Session>> {
         let mut changed_sessions = Vec::new();
 
         let incoming_key_requests =
@@ -199,8 +210,8 @@ impl GossipMachine {
         for event in incoming_key_requests.values() {
             if let Some(s) = match event {
                 #[cfg(feature = "automatic-room-key-forwarding")]
-                RequestEvent::KeyShare(e) => Box::pin(self.handle_key_request(e)).await?,
-                RequestEvent::Secret(e) => Box::pin(self.handle_secret_request(e)).await?,
+                RequestEvent::KeyShare(e) => Box::pin(self.handle_key_request(cache, e)).await?,
+                RequestEvent::Secret(e) => Box::pin(self.handle_secret_request(cache, e)).await?,
                 #[cfg(not(feature = "automatic-room-key-forwarding"))]
                 _ => None,
             } {
@@ -256,6 +267,7 @@ impl GossipMachine {
 
     async fn handle_secret_request(
         &self,
+        cache: &StoreCache,
         event: &SecretRequestEvent,
     ) -> OlmResult<Option<Session>> {
         let secret_name = match &event.content.action {
@@ -329,9 +341,15 @@ impl GossipMachine {
                 user_id = event.sender.as_str(),
                 device_id = event.content.requesting_device_id.as_str(),
                 ?secret_name,
-                "Received a secret request form an unknown device",
+                "Received a secret request from an unknown device",
             );
-            self.inner.store.mark_user_as_changed(&event.sender).await?;
+            self.inner
+                .identity_manager
+                .key_query_manager
+                .synced(cache)
+                .await?
+                .mark_user_as_changed(&event.sender)
+                .await?;
 
             None
         })
@@ -380,6 +398,7 @@ impl GossipMachine {
     #[cfg(feature = "automatic-room-key-forwarding")]
     async fn answer_room_key_request(
         &self,
+        cache: &StoreCache,
         event: &RoomKeyRequestEvent,
         session: &InboundGroupSession,
     ) -> OlmResult<Option<Session>> {
@@ -390,7 +409,12 @@ impl GossipMachine {
 
         let Some(device) = device else {
             warn!("Received a key request from an unknown device");
-            self.inner.store.mark_user_as_changed(&event.sender).await?;
+            self.identity_manager()
+                .key_query_manager
+                .synced(cache)
+                .await?
+                .mark_user_as_changed(&event.sender)
+                .await?;
 
             return Ok(None);
         };
@@ -421,14 +445,15 @@ impl GossipMachine {
     #[tracing::instrument(
         skip_all,
         fields(
-            user_id = %event.sender,
-            device_id = %event.content.requesting_device_id,
-            %room_id,
+            user_id = ?event.sender,
+            device_id = ?event.content.requesting_device_id,
+            ?room_id,
             session_id
         )
     )]
     async fn handle_supported_key_request(
         &self,
+        cache: &StoreCache,
         event: &RoomKeyRequestEvent,
         room_id: &RoomId,
         session_id: &str,
@@ -436,7 +461,7 @@ impl GossipMachine {
         let session = self.inner.store.get_inbound_group_session(room_id, session_id).await?;
 
         if let Some(s) = session {
-            self.answer_room_key_request(event, &s).await
+            self.answer_room_key_request(cache, event, &s).await
         } else {
             debug!("Received a room key request for an unknown inbound group session",);
 
@@ -446,14 +471,19 @@ impl GossipMachine {
 
     /// Handle a single incoming key request.
     #[cfg(feature = "automatic-room-key-forwarding")]
-    async fn handle_key_request(&self, event: &RoomKeyRequestEvent) -> OlmResult<Option<Session>> {
+    async fn handle_key_request(
+        &self,
+        cache: &StoreCache,
+        event: &RoomKeyRequestEvent,
+    ) -> OlmResult<Option<Session>> {
         use crate::types::events::room_key_request::{Action, RequestedKeyInfo};
 
         if self.inner.room_key_forwarding_enabled.load(Ordering::SeqCst) {
             match &event.content.action {
                 Action::Request(info) => match info {
                     RequestedKeyInfo::MegolmV1AesSha2(i) => {
-                        self.handle_supported_key_request(event, &i.room_id, &i.session_id).await
+                        self.handle_supported_key_request(cache, event, &i.room_id, &i.session_id)
+                            .await
                     }
                     #[cfg(feature = "experimental-algorithms")]
                     RequestedKeyInfo::MegolmV2AesSha2(i) => {
@@ -762,11 +792,6 @@ impl GossipMachine {
             );
             info.sent_out = true;
             self.save_outgoing_key_info(info).await?;
-        } else {
-            warn!(
-                request_id = id.to_string(),
-                "Unknown outgoing secret request; cannot mark as sent"
-            )
         }
 
         self.inner.outgoing_requests.write().unwrap().remove(id);
@@ -810,7 +835,7 @@ impl GossipMachine {
                 // secret.
                 Err(e) => {
                     warn!(
-                        secret_name = %secret.secret_name,
+                        secret_name = ?secret.secret_name,
                         error = ?e,
                         "Error while importing a secret"
                     );
@@ -832,6 +857,7 @@ impl GossipMachine {
 
     async fn receive_secret(
         &self,
+        cache: &StoreCache,
         sender_key: Curve25519PublicKey,
         secret: GossippedSecret,
         changes: &mut Changes,
@@ -850,7 +876,12 @@ impl GossipMachine {
         } else {
             warn!("Received a m.secret.send event from an unknown device");
 
-            self.inner.store.mark_user_as_changed(&secret.event.sender).await?;
+            self.identity_manager()
+                .key_query_manager
+                .synced(cache)
+                .await?
+                .mark_user_as_changed(&secret.event.sender)
+                .await?;
         }
 
         Ok(())
@@ -859,6 +890,7 @@ impl GossipMachine {
     #[instrument(skip_all, fields(sender_key, sender = ?event.sender, request_id = ?event.content.request_id, secret_name))]
     pub async fn receive_secret_event(
         &self,
+        cache: &StoreCache,
         sender_key: Curve25519PublicKey,
         event: &DecryptedSecretSendEvent,
         changes: &mut Changes,
@@ -887,7 +919,7 @@ impl GossipMachine {
                         gossip_request: request,
                     };
 
-                    self.receive_secret(sender_key, secret, changes).await?;
+                    self.receive_secret(cache, sender_key, secret, changes).await?;
 
                     Some(secret_name)
                 }
@@ -1037,7 +1069,7 @@ mod tests {
 
     #[cfg(feature = "automatic-room-key-forwarding")]
     use assert_matches::assert_matches;
-    use matrix_sdk_test::async_test;
+    use matrix_sdk_test::{async_test, message_like_event_content};
     use ruma::{
         device_id, event_id,
         events::{
@@ -1048,7 +1080,6 @@ mod tests {
         serde::Raw,
         user_id, DeviceId, RoomId, UserId,
     };
-    use serde_json::json;
     use tokio::sync::Mutex;
 
     use super::GossipMachine;
@@ -1066,10 +1097,10 @@ mod tests {
         EncryptionSettings, OutgoingRequests,
     };
     use crate::{
-        identities::{LocalTrust, ReadOnlyDevice},
+        identities::{IdentityManager, LocalTrust, ReadOnlyDevice},
         olm::{Account, PrivateCrossSigningIdentity},
         session_manager::GroupSessionCache,
-        store::{CryptoStoreWrapper, MemoryStore, Store},
+        store::{CryptoStoreWrapper, MemoryStore, PendingChanges, Store},
         types::events::room::encrypted::{EncryptedEvent, RoomEncryptedEventContent},
         verification::VerificationMachine,
     };
@@ -1113,7 +1144,7 @@ mod tests {
     }
 
     #[cfg(feature = "automatic-room-key-forwarding")]
-    fn test_gossip_machine(user_id: &UserId) -> GossipMachine {
+    async fn gossip_machine_test_helper(user_id: &UserId) -> GossipMachine {
         let user_id = user_id.to_owned();
         let device_id = DeviceId::new();
 
@@ -1122,30 +1153,35 @@ mod tests {
         let identity = Arc::new(Mutex::new(PrivateCrossSigningIdentity::empty(alice_id())));
         let verification =
             VerificationMachine::new(account.static_data.clone(), identity.clone(), store.clone());
-        let store = Store::new(account, identity, store, verification);
-        let session_cache = GroupSessionCache::new(store.clone());
+        let store = Store::new(account.static_data().clone(), identity, store, verification);
+        store.save_pending_changes(PendingChanges { account: Some(account) }).await.unwrap();
 
-        GossipMachine::new(store, session_cache, Default::default())
+        let session_cache = GroupSessionCache::new(store.clone());
+        let identity_manager = IdentityManager::new(store.clone());
+
+        GossipMachine::new(store, identity_manager, session_cache, Default::default())
     }
 
-    async fn get_machine() -> GossipMachine {
+    async fn get_machine_test_helper() -> GossipMachine {
         let user_id = alice_id().to_owned();
         let account = Account::with_device_id(&user_id, alice_device_id());
-        let device = ReadOnlyDevice::from_account(&account).await;
+        let device = ReadOnlyDevice::from_account(&account);
         let another_device =
-            ReadOnlyDevice::from_account(&Account::with_device_id(&user_id, alice2_device_id()))
-                .await;
+            ReadOnlyDevice::from_account(&Account::with_device_id(&user_id, alice2_device_id()));
 
         let store = Arc::new(CryptoStoreWrapper::new(&user_id, MemoryStore::new()));
         let identity = Arc::new(Mutex::new(PrivateCrossSigningIdentity::empty(alice_id())));
         let verification =
             VerificationMachine::new(account.static_data.clone(), identity.clone(), store.clone());
 
-        let store = Store::new(account, identity, store, verification);
+        let store = Store::new(account.static_data().clone(), identity, store, verification);
         store.save_devices(&[device, another_device]).await.unwrap();
+        store.save_pending_changes(PendingChanges { account: Some(account) }).await.unwrap();
         let session_cache = GroupSessionCache::new(store.clone());
 
-        GossipMachine::new(store, session_cache, Default::default())
+        let identity_manager = IdentityManager::new(store.clone());
+
+        GossipMachine::new(store, identity_manager, session_cache, Default::default())
     }
 
     #[cfg(feature = "automatic-room-key-forwarding")]
@@ -1154,19 +1190,20 @@ mod tests {
         create_sessions: bool,
         algorithm: EventEncryptionAlgorithm,
     ) -> (GossipMachine, OutboundGroupSession, GossipMachine) {
-        let alice_machine = get_machine().await;
-        let alice_device =
-            ReadOnlyDevice::from_account(&alice_machine.inner.store.cache().await.unwrap().account)
-                .await;
+        let alice_machine = get_machine_test_helper().await;
+        let alice_device = ReadOnlyDevice::from_account(
+            &alice_machine.inner.store.cache().await.unwrap().account().await.unwrap(),
+        );
 
-        let bob_machine = test_gossip_machine(other_machine_owner);
+        let bob_machine = gossip_machine_test_helper(other_machine_owner).await;
 
-        let bob_device =
-            ReadOnlyDevice::from_account(&bob_machine.inner.store.cache().await.unwrap().account)
-                .await;
+        let bob_device = ReadOnlyDevice::from_account(
+            #[allow(clippy::explicit_auto_deref)] // clippy's wrong
+            &*bob_machine.inner.store.cache().await.unwrap().account().await.unwrap(),
+        );
 
         // We need a trusted device, otherwise we won't request keys
-        let second_device = ReadOnlyDevice::from_account(&alice_2_account()).await;
+        let second_device = ReadOnlyDevice::from_account(&alice_2_account());
         second_device.set_trust_state(LocalTrust::Verified);
         bob_device.set_trust_state(LocalTrust::Verified);
         alice_machine.inner.store.save_devices(&[bob_device, second_device]).await.unwrap();
@@ -1215,7 +1252,7 @@ mod tests {
             .await
             .unwrap();
 
-        let content = group_session.encrypt(json!({}), "m.dummy").await;
+        let content = group_session.encrypt("m.dummy", &message_like_event_content!({})).await;
         let event = wrap_encrypted_content(bob_machine.user_id(), content);
 
         // Alice wants to request the outbound group session from bob.
@@ -1293,19 +1330,19 @@ mod tests {
 
     #[async_test]
     async fn create_machine() {
-        let machine = get_machine().await;
+        let machine = get_machine_test_helper().await;
 
         assert!(machine.outgoing_to_device_requests().await.unwrap().is_empty());
     }
 
     #[async_test]
     async fn re_request_keys() {
-        let machine = get_machine().await;
+        let machine = get_machine_test_helper().await;
         let account = account();
 
         let (outbound, session) = account.create_group_session_pair_with_defaults(room_id()).await;
 
-        let content = outbound.encrypt(json!({}), "m.dummy").await;
+        let content = outbound.encrypt("m.dummy", &message_like_event_content!({})).await;
         let event = wrap_encrypted_content(machine.user_id(), content);
 
         assert!(machine.outgoing_to_device_requests().await.unwrap().is_empty());
@@ -1323,17 +1360,17 @@ mod tests {
     #[async_test]
     #[cfg(feature = "automatic-room-key-forwarding")]
     async fn create_key_request() {
-        let machine = get_machine().await;
+        let machine = get_machine_test_helper().await;
         let account = account();
         let second_account = alice_2_account();
-        let alice_device = ReadOnlyDevice::from_account(&second_account).await;
+        let alice_device = ReadOnlyDevice::from_account(&second_account);
 
         // We need a trusted device, otherwise we won't request keys
         alice_device.set_trust_state(LocalTrust::Verified);
         machine.inner.store.save_devices(&[alice_device]).await.unwrap();
 
         let (outbound, session) = account.create_group_session_pair_with_defaults(room_id()).await;
-        let content = outbound.encrypt(json!({}), "m.dummy").await;
+        let content = outbound.encrypt("m.dummy", &message_like_event_content!({})).await;
         let event = wrap_encrypted_content(machine.user_id(), content);
 
         assert!(machine.outgoing_to_device_requests().await.unwrap().is_empty());
@@ -1355,18 +1392,18 @@ mod tests {
     #[async_test]
     #[cfg(feature = "automatic-room-key-forwarding")]
     async fn receive_forwarded_key() {
-        let machine = get_machine().await;
+        let machine = get_machine_test_helper().await;
         let account = account();
 
         let second_account = alice_2_account();
-        let alice_device = ReadOnlyDevice::from_account(&second_account).await;
+        let alice_device = ReadOnlyDevice::from_account(&second_account);
 
         // We need a trusted device, otherwise we won't request keys
         alice_device.set_trust_state(LocalTrust::Verified);
         machine.inner.store.save_devices(&[alice_device.clone()]).await.unwrap();
 
         let (outbound, session) = account.create_group_session_pair_with_defaults(room_id()).await;
-        let content = outbound.encrypt(json!({}), "m.dummy").await;
+        let content = outbound.encrypt("m.dummy", &message_like_event_content!({})).await;
         let room_event = wrap_encrypted_content(machine.user_id(), content);
 
         machine.create_outgoing_key_request(session.room_id(), &room_event).await.unwrap();
@@ -1464,7 +1501,7 @@ mod tests {
     #[async_test]
     #[cfg(feature = "automatic-room-key-forwarding")]
     async fn should_share_key_test() {
-        let machine = get_machine().await;
+        let machine = get_machine_test_helper().await;
         let account = account();
 
         let own_device =
@@ -1481,7 +1518,7 @@ mod tests {
         // Now we do want to share the keys.
         machine.should_share_key(&own_device, &inbound).await.unwrap();
 
-        let bob_device = ReadOnlyDevice::from_account(&bob_account()).await;
+        let bob_device = ReadOnlyDevice::from_account(&bob_account());
         machine.inner.store.save_devices(&[bob_device]).await.unwrap();
 
         let bob_device =
@@ -1539,7 +1576,7 @@ mod tests {
 
         // Finally, let's ensure we don't share the session with a device that rotated
         // its curve25519 key.
-        let bob_device = ReadOnlyDevice::from_account(&bob_account()).await;
+        let bob_device = ReadOnlyDevice::from_account(&bob_account());
         machine.inner.store.save_devices(&[bob_device]).await.unwrap();
 
         let bob_device =
@@ -1594,7 +1631,11 @@ mod tests {
 
         // Receive the room key request from alice.
         bob_machine.receive_incoming_key_request(&event);
-        bob_machine.collect_incoming_key_requests().await.unwrap();
+
+        {
+            let bob_cache = bob_machine.inner.store.cache().await.unwrap();
+            bob_machine.collect_incoming_key_requests(&bob_cache).await.unwrap();
+        }
         // Now bob does have an outgoing request.
         assert!(!bob_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
@@ -1672,7 +1713,10 @@ mod tests {
 
         // Receive the room key request from alice.
         bob_machine.receive_incoming_key_request(&event);
-        bob_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let bob_cache = bob_machine.inner.store.cache().await.unwrap();
+            bob_machine.collect_incoming_key_requests(&bob_cache).await.unwrap();
+        }
         // Now bob does have an outgoing request.
         assert!(!bob_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
@@ -1731,13 +1775,13 @@ mod tests {
 
     #[async_test]
     async fn test_secret_share_cycle() {
-        let alice_machine = get_machine().await;
+        let alice_machine = get_machine_test_helper().await;
 
-        let second_account = alice_2_account();
-        let alice_device = ReadOnlyDevice::from_account(&second_account).await;
+        let mut second_account = alice_2_account();
+        let alice_device = ReadOnlyDevice::from_account(&second_account);
 
         let bob_account = bob_account();
-        let bob_device = ReadOnlyDevice::from_account(&bob_account).await;
+        let bob_device = ReadOnlyDevice::from_account(&bob_account);
 
         alice_machine.inner.store.save_devices(&[alice_device.clone()]).await.unwrap();
 
@@ -1747,7 +1791,8 @@ mod tests {
             .store
             .with_transaction(|mut tr| async {
                 let alice_account = tr.account().await?;
-                let (alice_session, _) = alice_account.create_session_for(&second_account).await;
+                let (alice_session, _) =
+                    alice_account.create_session_for(&mut second_account).await;
                 Ok((tr, alice_session))
             })
             .await
@@ -1767,13 +1812,19 @@ mod tests {
         // No secret found
         assert!(alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
         alice_machine.receive_incoming_secret_request(&event);
-        alice_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.inner.store.cache().await.unwrap();
+            alice_machine.collect_incoming_key_requests(&alice_cache).await.unwrap();
+        }
         assert!(alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
         // No device found
         alice_machine.inner.store.reset_cross_signing_identity().await;
         alice_machine.receive_incoming_secret_request(&event);
-        alice_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.inner.store.cache().await.unwrap();
+            alice_machine.collect_incoming_key_requests(&alice_cache).await.unwrap();
+        }
         assert!(alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
         alice_machine.inner.store.save_devices(&[bob_device]).await.unwrap();
@@ -1781,7 +1832,10 @@ mod tests {
         // The device doesn't belong to us
         alice_machine.inner.store.reset_cross_signing_identity().await;
         alice_machine.receive_incoming_secret_request(&event);
-        alice_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.inner.store.cache().await.unwrap();
+            alice_machine.collect_incoming_key_requests(&alice_cache).await.unwrap();
+        }
         assert!(alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
         let event = RumaToDeviceEvent {
@@ -1795,7 +1849,10 @@ mod tests {
 
         // The device isn't trusted
         alice_machine.receive_incoming_secret_request(&event);
-        alice_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.inner.store.cache().await.unwrap();
+            alice_machine.collect_incoming_key_requests(&alice_cache).await.unwrap();
+        }
         assert!(alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
 
         // We need a trusted device, otherwise we won't serve secrets
@@ -1803,13 +1860,16 @@ mod tests {
         alice_machine.inner.store.save_devices(&[alice_device.clone()]).await.unwrap();
 
         alice_machine.receive_incoming_secret_request(&event);
-        alice_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.inner.store.cache().await.unwrap();
+            alice_machine.collect_incoming_key_requests(&alice_cache).await.unwrap();
+        }
         assert!(!alice_machine.inner.outgoing_requests.read().unwrap().is_empty());
     }
 
     #[async_test]
     #[cfg(feature = "backups_v1")]
-    async fn secret_broadcasting() {
+    async fn test_secret_broadcasting() {
         use futures_util::{pin_mut, FutureExt};
         use ruma::api::client::to_device::send_event_to_device::v3::Response as ToDeviceResponse;
         use serde_json::value::to_raw_value;
@@ -1872,7 +1932,15 @@ mod tests {
             .await
             .unwrap();
         alice_machine.inner.key_request_machine.receive_incoming_secret_request(&event);
-        alice_machine.inner.key_request_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let alice_cache = alice_machine.store().cache().await.unwrap();
+            alice_machine
+                .inner
+                .key_request_machine
+                .collect_incoming_key_requests(&alice_cache)
+                .await
+                .unwrap();
+        }
 
         let requests =
             alice_machine.inner.key_request_machine.outgoing_to_device_requests().await.unwrap();
@@ -1925,7 +1993,10 @@ mod tests {
 
         // Receive the room key request from alice.
         bob_machine.receive_incoming_key_request(&event);
-        bob_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let bob_cache = bob_machine.inner.store.cache().await.unwrap();
+            bob_machine.collect_incoming_key_requests(&bob_cache).await.unwrap();
+        }
         // Bob only has a keys claim request, since we're lacking a session
         assert_eq!(bob_machine.outgoing_to_device_requests().await.unwrap().len(), 1);
         assert_matches!(
@@ -1960,7 +2031,10 @@ mod tests {
 
         bob_machine.retry_keyshare(alice_id(), alice_device_id());
         assert!(bob_machine.inner.users_for_key_claim.read().unwrap().is_empty());
-        bob_machine.collect_incoming_key_requests().await.unwrap();
+        {
+            let bob_cache = bob_machine.inner.store.cache().await.unwrap();
+            bob_machine.collect_incoming_key_requests(&bob_cache).await.unwrap();
+        }
         // Bob now has an outgoing requests.
         assert!(!bob_machine.outgoing_to_device_requests().await.unwrap().is_empty());
         assert!(bob_machine.inner.wait_queue.is_empty());

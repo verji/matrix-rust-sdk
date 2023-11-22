@@ -14,13 +14,26 @@
 
 use std::fmt;
 
+use ruma::{
+    events::{AnyTimelineEvent, MessageLikeEventType, StateEventType},
+    serde::Raw,
+    OwnedEventId, RoomId,
+};
 use serde::{Deserialize, Serialize};
+
+use super::SendEventRequest;
+use crate::widget::StateKeySelector;
 
 #[derive(Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", content = "data")]
 pub(super) enum FromWidgetRequest {
     SupportedApiVersions {},
     ContentLoaded {},
+    #[serde(rename = "get_openid")]
+    GetOpenId {},
+    #[serde(rename = "org.matrix.msc2876.read_events")]
+    ReadEvent(ReadEventRequest),
+    SendEvent(SendEventRequest),
 }
 
 #[derive(Serialize)]
@@ -41,13 +54,13 @@ struct FromWidgetError {
 
 #[derive(Serialize)]
 pub(super) struct SupportedApiVersionsResponse {
-    versions: Vec<ApiVersion>,
+    supported_versions: Vec<ApiVersion>,
 }
 
 impl SupportedApiVersionsResponse {
     pub(super) fn new() -> Self {
         Self {
-            versions: vec![
+            supported_versions: vec![
                 ApiVersion::V0_0_1,
                 ApiVersion::V0_0_2,
                 ApiVersion::MSC2762,
@@ -96,4 +109,31 @@ pub(super) enum ApiVersion {
     /// Supports access to the TURN servers.
     #[serde(rename = "town.robin.msc3846")]
     MSC3846,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub(super) enum ReadEventRequest {
+    ReadStateEvent {
+        #[serde(rename = "type")]
+        event_type: StateEventType,
+        state_key: StateKeySelector,
+    },
+    #[allow(dead_code)]
+    ReadMessageLikeEvent {
+        #[serde(rename = "type")]
+        event_type: MessageLikeEventType,
+        limit: Option<u32>,
+    },
+}
+
+#[derive(Debug, Serialize)]
+pub(super) struct ReadEventResponse {
+    pub(super) events: Vec<Raw<AnyTimelineEvent>>,
+}
+
+#[derive(Serialize)]
+pub(super) struct SendEventResponse<'a> {
+    pub(super) room_id: &'a RoomId,
+    pub(super) event_id: OwnedEventId,
 }

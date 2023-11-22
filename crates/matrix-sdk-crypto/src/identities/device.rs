@@ -96,6 +96,7 @@ fn default_timestamp() -> MilliSecondsSinceUnixEpoch {
     MilliSecondsSinceUnixEpoch(UInt::default())
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for ReadOnlyDevice {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ReadOnlyDevice")
@@ -119,6 +120,7 @@ pub struct Device {
     pub(crate) device_owner_identity: Option<ReadOnlyUserIdentities>,
 }
 
+#[cfg(not(tarpaulin_include))]
 impl std::fmt::Debug for Device {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Device").field("device", &self.inner).finish()
@@ -414,8 +416,8 @@ impl Device {
     #[instrument(
         skip_all,
         fields(
-            recipient = %self.user_id(),
-            recipient_device = %self.device_id(),
+            recipient = ?self.user_id(),
+            recipient_device = ?self.device_id(),
             recipient_key = ?self.curve25519_key(),
             event_type,
             session,
@@ -869,7 +871,7 @@ impl ReadOnlyDevice {
     pub async fn from_machine_test_helper(
         machine: &OlmMachine,
     ) -> Result<ReadOnlyDevice, crate::CryptoStoreError> {
-        Ok(ReadOnlyDevice::from_account(&machine.store().cache().await?.account).await)
+        Ok(ReadOnlyDevice::from_account(&*machine.store().cache().await?.account().await?))
     }
 
     /// Create a `ReadOnlyDevice` from an `Account`
@@ -884,8 +886,8 @@ impl ReadOnlyDevice {
     /// *Don't* use this after we received a keys/query response, other
     /// users/devices might add signatures to our own device, which can't be
     /// replicated locally.
-    pub async fn from_account(account: &Account) -> ReadOnlyDevice {
-        let device_keys = account.device_keys().await;
+    pub fn from_account(account: &Account) -> ReadOnlyDevice {
+        let device_keys = account.device_keys();
         let mut device = ReadOnlyDevice::try_from(&device_keys)
             .expect("Creating a device from our own account should always succeed");
         device.first_time_seen_ts = account.creation_local_time();

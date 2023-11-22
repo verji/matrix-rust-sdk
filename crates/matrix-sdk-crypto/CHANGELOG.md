@@ -65,3 +65,19 @@
   `OutgoingRequest` to `(OwnedTransactionId, KeysBackupRequest)`.
 
 - Expose new `OlmMachine::get_room_event_encryption_info` method.
+
+- Clean up the logging of to-device messages in `share_room_key`.
+
+- Remove spurious "Unknown outgoing secret request" warning which was logged
+  for every outgoing secret request.
+
+- Stop logging large quantities of data about the `Store` during olm
+  decryption.
+
+- Change the return value of `bootstrap_cross_signing` so it returns an extra keys upload request.
+  The three requests must be sent in the order they appear in the return tuple.
+
+- The parameter order of `OlmMachine::encrypt_room_event_raw` and
+  `OutboundGroupSession::encrypt` has changed, `content` is now last
+  - The parameter type of `content` has also changed, from `serde_json::Value`
+    to `&Raw<AnyMessageLikeEventContent>`

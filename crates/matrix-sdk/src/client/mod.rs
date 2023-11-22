@@ -22,7 +22,6 @@ use std::{
     sync::{Arc, Mutex as StdMutex, RwLock as StdRwLock},
 };
 
-use dashmap::DashMap;
 use eyeball::{SharedObservable, Subscriber};
 use futures_core::Stream;
 #[cfg(feature = "e2e-encryption")]
@@ -66,6 +65,7 @@ use tokio::sync::{broadcast, Mutex, OnceCell, RwLock, RwLockReadGuard};
 use tracing::{debug, error, instrument, trace, Instrument, Span};
 use url::Url;
 
+use self::futures::SendRequest;
 #[cfg(feature = "experimental-oidc")]
 use crate::oidc::Oidc;
 use crate::{
@@ -84,15 +84,15 @@ use crate::{
     TransmissionProgress,
 };
 #[cfg(feature = "e2e-encryption")]
-use crate::{encryption::Encryption, store_locks::CrossProcessStoreLock};
+use crate::{
+    encryption::{Encryption, EncryptionSettings},
+    store_locks::CrossProcessStoreLock,
+};
 
 mod builder;
-mod futures;
+pub(crate) mod futures;
 
-pub use self::{
-    builder::{ClientBuildError, ClientBuilder},
-    futures::SendRequest,
-};
+pub use self::builder::{ClientBuildError, ClientBuilder};
 
 #[cfg(not(target_arch = "wasm32"))]
 type NotificationHandlerFut = Pin<Box<dyn Future<Output = ()> + Send>>;
@@ -202,7 +202,7 @@ pub(crate) struct ClientInner {
     /// to ensure that only a single call to a method happens at once or to
     /// deduplicate multiple calls to a method.
     locks: ClientLocks,
-    pub(crate) typing_notice_times: DashMap<OwnedRoomId, Instant>,
+    pub(crate) typing_notice_times: StdRwLock<BTreeMap<OwnedRoomId, Instant>>,
     /// Event handlers. See `add_event_handler`.
     pub(crate) event_handlers: EventHandlerStore,
     /// Notification handlers. See `register_notification_handler`.
@@ -217,13 +217,16 @@ pub(crate) struct ClientInner {
     /// wait for the sync to get the data to fetch a room object from the state
     /// store.
     pub(crate) sync_beat: event_listener::Event,
+    /// End-to-end encryption settings.
+    #[cfg(feature = "e2e-encryption")]
+    pub(crate) encryption_settings: EncryptionSettings,
 }
 
 impl ClientInner {
     /// Create a new `ClientInner`.
     ///
-    /// All the fields passed here are those that must be cloned upon
-    /// instantiation of a sub-client, e.g. a client specialized for
+    /// All the fields passed as parameters here are those that must be cloned
+    /// upon instantiation of a sub-client, e.g. a client specialized for
     /// notifications.
     #[allow(clippy::too_many_arguments)]
     fn new(
@@ -234,6 +237,7 @@ impl ClientInner {
         base_client: BaseClient,
         server_versions: Option<Box<[MatrixVersion]>>,
         respect_login_well_known: bool,
+        #[cfg(feature = "e2e-encryption")] encryption_settings: EncryptionSettings,
     ) -> Self {
         Self {
             homeserver: StdRwLock::new(homeserver),
@@ -250,6 +254,8 @@ impl ClientInner {
             room_update_channels: Default::default(),
             respect_login_well_known,
             sync_beat: event_listener::Event::new(),
+            #[cfg(feature = "e2e-encryption")]
+            encryption_settings,
         }
     }
 }
@@ -1913,6 +1919,8 @@ impl Client {
                 self.inner.base_client.clone_with_in_memory_state_store(),
                 self.inner.server_versions.get().cloned(),
                 self.inner.respect_login_well_known,
+                #[cfg(feature = "e2e-encryption")]
+                self.inner.encryption_settings,
             )),
         };
 
@@ -1939,6 +1947,7 @@ pub(crate) mod tests {
     use matrix_sdk_base::RoomState;
     use matrix_sdk_test::{
         async_test, test_json, JoinedRoomBuilder, StateTestEvent, SyncResponseBuilder,
+        DEFAULT_TEST_ROOM_ID,
     };
     #[cfg(target_arch = "wasm32")]
     wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
@@ -2050,11 +2059,10 @@ pub(crate) mod tests {
             .build_sync_response();
 
         client.inner.base_client.receive_sync_response(response).await.unwrap();
-        let room_id = &test_json::DEFAULT_SYNC_ROOM_ID;
 
         assert_eq!(client.homeserver(), Url::parse(&server.uri()).unwrap());
 
-        let room = client.get_room(room_id).unwrap();
+        let room = client.get_room(&DEFAULT_TEST_ROOM_ID).unwrap();
         assert_eq!(room.state(), RoomState::Joined);
     }
 

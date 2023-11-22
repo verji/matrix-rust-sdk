@@ -55,11 +55,13 @@ use thiserror::Error;
 use tokio::sync::{mpsc::Sender, Mutex, Notify};
 use tracing::{error, info, instrument, warn};
 
+use self::futures::SendAttachment;
+
 mod builder;
 mod error;
 mod event_handler;
 mod event_item;
-mod futures;
+pub mod futures;
 mod inner;
 mod item;
 mod pagination;
@@ -85,7 +87,6 @@ pub use self::{
         Message, OtherState, Profile, ReactionGroup, RepliedToEvent, RoomMembershipChange, Sticker,
         TimelineDetails, TimelineItemContent,
     },
-    futures::SendAttachment,
     item::{TimelineItem, TimelineItemKind},
     pagination::{BackPaginationStatus, PaginationOptions, PaginationOutcome},
     polls::PollResult,
@@ -483,7 +484,7 @@ impl Timeline {
 
         let event_content =
             AnyMessageLikeEventContent::Reaction(ReactionEventContent::from(annotation.clone()));
-        let response = room.send(event_content, Some(&txn_id)).await;
+        let response = room.send(event_content).with_transaction_id(&txn_id).await;
 
         match response {
             Ok(response) => {
@@ -637,6 +638,21 @@ impl Timeline {
         user_id: &UserId,
     ) -> Option<(OwnedEventId, Receipt)> {
         self.inner.latest_user_read_receipt(user_id).await
+    }
+
+    /// Get the ID of the timeline event with the latest read receipt for the
+    /// given user.
+    ///
+    /// In contrary to [`Self::latest_user_read_receipt()`], this allows to know
+    /// the position of the read receipt in the timeline even if the event it
+    /// applies to is not visible in the timeline, unless the event is unknown
+    /// by this timeline.
+    #[instrument(skip(self))]
+    pub async fn latest_user_read_receipt_timeline_event_id(
+        &self,
+        user_id: &UserId,
+    ) -> Option<OwnedEventId> {
+        self.inner.latest_user_read_receipt_timeline_event_id(user_id).await
     }
 
     /// Send the given receipt.

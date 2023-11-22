@@ -12,7 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use assert_matches::assert_matches;
+use assert_matches2::assert_let;
+use ruma::owned_room_id;
 use serde_json::{json, Value as JsonValue};
 
 use super::WIDGET_ID;
@@ -20,9 +21,14 @@ use crate::widget::machine::{Action, IncomingMessage, WidgetMachine};
 
 #[test]
 fn get_supported_api_versions() {
-    let (mut machine, mut actions_recv) = WidgetMachine::new(WIDGET_ID.to_owned(), true);
+    let (mut machine, _) = WidgetMachine::new(
+        WIDGET_ID.to_owned(),
+        owned_room_id!("!a98sd12bjh:example.org"),
+        true,
+        None,
+    );
 
-    machine.process(IncomingMessage::WidgetMessage(json_string!({
+    let actions = machine.process(IncomingMessage::WidgetMessage(json_string!({
         "api": "fromWidget",
         "widgetId": WIDGET_ID,
         "requestId": "S2ixNhjaC0kd0jJn",
@@ -30,8 +36,8 @@ fn get_supported_api_versions() {
         "data": {},
     })));
 
-    let action = actions_recv.try_recv().unwrap();
-    let msg = assert_matches!(action, Action::SendToWidget(msg) => msg);
+    let [action]: [Action; 1] = actions.try_into().unwrap();
+    assert_let!(Action::SendToWidget(msg) = action);
     let msg: JsonValue = serde_json::from_str(&msg).unwrap();
     assert_eq!(
         msg,
@@ -42,7 +48,7 @@ fn get_supported_api_versions() {
             "action": "supported_api_versions",
             "data": {},
             "response": {
-                "versions": [
+                "supported_versions": [
                     "0.0.1",
                     "0.0.2",
                     "org.matrix.msc2762",

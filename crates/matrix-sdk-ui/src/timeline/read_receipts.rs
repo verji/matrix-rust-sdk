@@ -13,13 +13,13 @@
 // limitations under the License.
 
 use std::{
+    cmp::Ordering,
     collections::{HashMap, VecDeque},
     sync::Arc,
 };
 
 use eyeball_im::ObservableVectorTransaction;
 use indexmap::IndexMap;
-use matrix_sdk::Room;
 use ruma::{
     events::receipt::{Receipt, ReceiptEventContent, ReceiptThread, ReceiptType},
     EventId, OwnedEventId, OwnedUserId, UserId,
@@ -53,6 +53,7 @@ pub(super) struct ReadReceipts {
 impl ReadReceipts {
     /// Remove all data.
     pub(super) fn clear(&mut self) {
+        self.events_read_receipts.clear();
         self.users_read_receipts.clear();
     }
 
@@ -317,7 +318,7 @@ impl TimelineInnerStateTransaction<'_> {
                 }
 
                 for (user_id, receipt) in receipts {
-                    if receipt.thread != ReceiptThread::Unthreaded {
+                    if !matches!(receipt.thread, ReceiptThread::Unthreaded | ReceiptThread::Main) {
                         continue;
                     }
 
@@ -352,12 +353,10 @@ impl TimelineInnerStateTransaction<'_> {
 
         // Filter out receipts for our own user.
         let own_user_id = room_data_provider.own_user_id();
-        let read_receipts: IndexMap<OwnedUserId, Receipt> =
-            read_receipts.into_iter().filter(|(user_id, _)| user_id != own_user_id).collect();
+        let read_receipts = read_receipts.into_iter().filter(|(user_id, _)| user_id != own_user_id);
 
         // Since they are explicit read receipts, we need to check if they are
         // superseded by implicit read receipts.
-        let own_user_id = room_data_provider.own_user_id();
         for (user_id, receipt) in read_receipts {
             let full_receipt = FullReceipt {
                 event_id,
@@ -455,56 +454,75 @@ impl TimelineInnerState {
     /// Get the latest read receipt for the given user.
     ///
     /// Useful to get the latest read receipt, whether it's private or public.
-    pub(super) async fn latest_user_read_receipt(
+    pub(super) async fn latest_user_read_receipt<P: RoomDataProvider>(
         &self,
         user_id: &UserId,
-        room: &Room,
+        room_data_provider: &P,
     ) -> Option<(OwnedEventId, Receipt)> {
-        let public_read_receipt = self.user_receipt(user_id, ReceiptType::Read, room).await;
-        let private_read_receipt = self.user_receipt(user_id, ReceiptType::ReadPrivate, room).await;
+        let public_read_receipt =
+            self.user_receipt(user_id, ReceiptType::Read, room_data_provider).await;
+        let private_read_receipt =
+            self.user_receipt(user_id, ReceiptType::ReadPrivate, room_data_provider).await;
 
-        // If we only have one, return it.
-        let Some((pub_event_id, pub_receipt)) = &public_read_receipt else {
-            return private_read_receipt;
-        };
-        let Some((priv_event_id, priv_receipt)) = &private_read_receipt else {
-            return public_read_receipt;
-        };
-
-        // Compare by position in the timeline.
-        if let Some(relative_pos) = self.meta.compare_events_positions(pub_event_id, priv_event_id)
+        // Let's assume that a private read receipt should be more recent than a public
+        // read receipt, otherwise there's no point in the private read receipt,
+        // and use it as default.
+        match self
+            .compare_optional_receipts(public_read_receipt.as_ref(), private_read_receipt.as_ref())
         {
-            if relative_pos == RelativePosition::After {
-                return private_read_receipt;
-            }
-
-            return public_read_receipt;
+            Ordering::Greater => public_read_receipt,
+            Ordering::Less => private_read_receipt,
+            _ => unreachable!(),
         }
+    }
 
-        // Compare by timestamp.
-        if let Some((pub_ts, priv_ts)) = pub_receipt.ts.zip(priv_receipt.ts) {
-            if priv_ts > pub_ts {
-                return private_read_receipt;
-            }
+    /// Get the ID of the visible timeline event with the latest read receipt
+    /// for the given user.
+    pub(super) fn latest_user_read_receipt_timeline_event_id(
+        &self,
+        user_id: &UserId,
+    ) -> Option<OwnedEventId> {
+        // We only need to use the local map, since receipts for known events are
+        // already loaded from the store.
+        let public_read_receipt = self
+            .read_receipts
+            .users_read_receipts
+            .get(user_id)
+            .and_then(|user_map| user_map.get(&ReceiptType::Read));
+        let private_read_receipt = self
+            .read_receipts
+            .users_read_receipts
+            .get(user_id)
+            .and_then(|user_map| user_map.get(&ReceiptType::ReadPrivate));
 
-            return public_read_receipt;
-        }
+        // Let's assume that a private read receipt should be more recent than a public
+        // read receipt, otherwise there's no point in the private read receipt,
+        // and use it as default.
+        let (latest_receipt_id, _) =
+            match self.compare_optional_receipts(public_read_receipt, private_read_receipt) {
+                Ordering::Greater => public_read_receipt?,
+                Ordering::Less => private_read_receipt?,
+                _ => unreachable!(),
+            };
 
-        // As a fallback, let's assume that a private read receipt should be more recent
-        // than a public read receipt, otherwise there's no point in the private read
-        // receipt.
-        private_read_receipt
+        // Find the corresponding visible event.
+        self.all_events
+            .iter()
+            .rev()
+            .skip_while(|ev| ev.event_id != *latest_receipt_id)
+            .find(|ev| ev.visible)
+            .map(|ev| ev.event_id.clone())
     }
 }
 
 impl TimelineInnerMetadata {
     /// Get the unthreaded receipt of the given type for the given user in the
     /// timeline.
-    pub(super) async fn user_receipt(
+    pub(super) async fn user_receipt<P: RoomDataProvider>(
         &self,
         user_id: &UserId,
         receipt_type: ReceiptType,
-        room: &Room,
+        room_data_provider: &P,
     ) -> Option<(OwnedEventId, Receipt)> {
         if let Some(receipt) = self
             .read_receipts
@@ -513,14 +531,67 @@ impl TimelineInnerMetadata {
             .and_then(|user_map| user_map.get(&receipt_type))
             .cloned()
         {
+            // Since it is in the timeline, it should be the most recent.
             return Some(receipt);
         }
 
-        room.user_receipt(receipt_type.clone(), ReceiptThread::Unthreaded, user_id)
-            .await
-            .unwrap_or_else(|e| {
-                error!("Could not get user read receipt of type {receipt_type:?}: {e}");
-                None
-            })
+        let unthreaded_read_receipt = room_data_provider
+            .user_receipt(receipt_type.clone(), ReceiptThread::Unthreaded, user_id)
+            .await;
+
+        let main_thread_read_receipt = room_data_provider
+            .user_receipt(receipt_type.clone(), ReceiptThread::Main, user_id)
+            .await;
+
+        // Let's use the unthreaded read receipt as default, since it's the one we
+        // should be using.
+        match self.compare_optional_receipts(
+            main_thread_read_receipt.as_ref(),
+            unthreaded_read_receipt.as_ref(),
+        ) {
+            Ordering::Greater => main_thread_read_receipt,
+            Ordering::Less => unthreaded_read_receipt,
+            _ => unreachable!(),
+        }
+    }
+
+    /// Compares two optional receipts to know which one is more recent.
+    ///
+    /// Returns `Ordering::Greater` if the left-hand side is more recent than
+    /// the right-hand side, and `Ordering::Less` if it is older. If it's
+    /// not possible to know which one is the more recent, defaults to
+    /// `Ordering::Less`, making the right-hand side the default.
+    fn compare_optional_receipts(
+        &self,
+        lhs: Option<&(OwnedEventId, Receipt)>,
+        rhs_or_default: Option<&(OwnedEventId, Receipt)>,
+    ) -> Ordering {
+        // If we only have one, use it.
+        let Some((lhs_event_id, lhs_receipt)) = lhs else {
+            return Ordering::Less;
+        };
+        let Some((rhs_event_id, rhs_receipt)) = rhs_or_default else {
+            return Ordering::Greater;
+        };
+
+        // Compare by position in the timeline.
+        if let Some(relative_pos) = self.compare_events_positions(lhs_event_id, rhs_event_id) {
+            if relative_pos == RelativePosition::Before {
+                return Ordering::Greater;
+            }
+
+            return Ordering::Less;
+        }
+
+        // Compare by timestamp.
+        if let Some((lhs_ts, rhs_ts)) = lhs_receipt.ts.zip(rhs_receipt.ts) {
+            if lhs_ts > rhs_ts {
+                return Ordering::Greater;
+            }
+
+            return Ordering::Less;
+        }
+
+        Ordering::Less
     }
 }

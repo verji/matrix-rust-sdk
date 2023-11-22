@@ -146,8 +146,9 @@ impl OwnUserIdentity {
             error!(error = ?e, "Couldn't store our own user identity after marking it as verified");
         }
 
-        let account = &self.store.cache().await?.account;
-        account.sign_master_key(self.master_key.clone()).await
+        let cache = self.store.cache().await?;
+        let account = cache.account().await?;
+        account.sign_master_key(self.master_key.clone())
     }
 
     /// Send a verification request to our other devices.
@@ -170,11 +171,11 @@ impl OwnUserIdentity {
         self.request_verification_helper(Some(methods)).await
     }
 
-    /// Does our user identity trust our own device, i.e. have we signed  our
+    /// Does our user identity trust our own device, i.e. have we signed our
     /// own device keys with our self-signing key.
     pub async fn trusts_our_own_device(&self) -> Result<bool, CryptoStoreError> {
         Ok(if let Some(signatures) = self.verification_machine.store.device_signatures().await? {
-            let mut device_keys = self.store.cache().await?.account.device_keys().await;
+            let mut device_keys = self.store.cache().await?.account().await?.device_keys();
             device_keys.signatures = signatures;
 
             self.inner.self_signing_key().verify_device_keys(&device_keys).is_ok()
@@ -752,7 +753,7 @@ pub(crate) mod testing {
     /// Generate default other "own" identity for tests
     #[cfg(test)]
     pub async fn get_other_own_identity() -> ReadOnlyOwnUserIdentity {
-        let private_identity = PrivateCrossSigningIdentity::new(other_user_id().into()).await;
+        let private_identity = PrivateCrossSigningIdentity::new(other_user_id().into());
         ReadOnlyOwnUserIdentity::from_private(&private_identity).await
     }
 

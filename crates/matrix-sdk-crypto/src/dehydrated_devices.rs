@@ -91,7 +91,7 @@ pub struct DehydratedDevices {
 
 impl DehydratedDevices {
     /// Create a new [`DehydratedDevice`] which can be uploaded to the server.
-    pub fn create(&self) -> DehydratedDevice {
+    pub async fn create(&self) -> Result<DehydratedDevice, DehydrationError> {
         let user_id = self.inner.user_id();
         let user_identity = self.inner.store().private_identity();
 
@@ -104,9 +104,11 @@ impl DehydratedDevices {
             store.clone(),
         );
 
-        let store = Store::new(account, user_identity, store, verification_machine);
+        let store =
+            Store::new(account.static_data().clone(), user_identity, store, verification_machine);
+        store.save_pending_changes(crate::store::PendingChanges { account: Some(account) }).await?;
 
-        DehydratedDevice { store }
+        Ok(DehydratedDevice { store })
     }
 
     /// Rehydrate the dehydrated device.
@@ -238,7 +240,7 @@ impl RehydratedDevice {
 
         // Let us first give the events to the rehydrated device, this will decrypt any
         // encrypted to-device events and fetch out the room keys.
-        let mut rehydrated_transaction = self.rehydrated.store().transaction().await?;
+        let mut rehydrated_transaction = self.rehydrated.store().transaction().await;
 
         let (_, changes) = self
             .rehydrated
@@ -289,7 +291,7 @@ impl DehydratedDevice {
     /// let pickle_key = [0u8; 32];
     ///
     /// // Create the dehydrated device.
-    /// let device = machine.dehydrated_devices().create();
+    /// let device = machine.dehydrated_devices().create().await?;
     ///
     /// // Create the request that should upload the device.
     /// let request = device
@@ -313,12 +315,12 @@ impl DehydratedDevice {
         initial_device_display_name: String,
         pickle_key: &[u8; 32],
     ) -> Result<put_dehydrated_device::unstable::Request, DehydrationError> {
-        let mut transaction = self.store.transaction().await?;
+        let mut transaction = self.store.transaction().await;
 
         let account = transaction.account().await?;
-        account.generate_fallback_key_helper().await;
+        account.generate_fallback_key_helper();
 
-        let (device_keys, one_time_keys, fallback_keys) = account.keys_for_upload().await;
+        let (device_keys, one_time_keys, fallback_keys) = account.keys_for_upload();
 
         let mut device_keys = device_keys
             .expect("We should always try to upload device keys for a dehydrated device.");
@@ -329,7 +331,7 @@ impl DehydratedDevice {
 
         let pickle_key = expand_pickle_key(pickle_key, &self.store.static_account().device_id);
         let device_id = self.store.static_account().device_id.clone();
-        let device_data = account.dehydrate(&pickle_key).await;
+        let device_data = account.dehydrate(&pickle_key);
         let initial_device_display_name = Some(initial_device_display_name);
 
         transaction.commit().await?;
@@ -456,10 +458,10 @@ mod tests {
     }
 
     #[async_test]
-    async fn dehydrated_device_creation() {
+    async fn test_dehydrated_device_creation() {
         let olm_machine = get_olm_machine().await;
 
-        let dehydrated_device = olm_machine.dehydrated_devices().create();
+        let dehydrated_device = olm_machine.dehydrated_devices().create().await.unwrap();
 
         let request = dehydrated_device
             .keys_for_upload("Foo".to_owned(), PICKLE_KEY)
@@ -482,7 +484,7 @@ mod tests {
         let room_id = room_id!("!test:example.org");
         let alice = get_olm_machine().await;
 
-        let dehydrated_device = alice.dehydrated_devices().create();
+        let dehydrated_device = alice.dehydrated_devices().create().await.unwrap();
 
         let mut request = dehydrated_device
             .keys_for_upload("Foo".to_owned(), PICKLE_KEY)

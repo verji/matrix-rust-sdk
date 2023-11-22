@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use assert_matches::assert_matches;
+use assert_matches2::assert_let;
 use ruma::serde::JsonObject;
 use serde_json::Value as JsonValue;
 
@@ -25,12 +25,12 @@ macro_rules! json_string {
 mod api_versions;
 mod capabilities;
 mod error;
+mod openid;
 
 const WIDGET_ID: &str = "test-widget";
 
 fn parse_msg(msg: &str) -> (JsonValue, String) {
     let mut deserialized: JsonObject = serde_json::from_str(msg).unwrap();
-    let request_id =
-        assert_matches!(deserialized.remove("requestId").unwrap(), JsonValue::String(s) => s);
+    assert_let!(JsonValue::String(request_id) = deserialized.remove("requestId").unwrap());
     (JsonValue::Object(deserialized), request_id)
 }
