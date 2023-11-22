@@ -1361,6 +1361,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-backups"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "matrix-sdk",
+ "tokio",
+ "tracing-subscriber",
+ "url",
+]
+
+[[package]]
 name = "example-command-bot"
 version = "0.1.0"
 dependencies = [
@@ -1403,6 +1416,20 @@ dependencies = [
  "tokio",
  "tracing-subscriber",
  "url",
+]
+
+[[package]]
+name = "example-encryption-recovery"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "futures-util",
+ "matrix-sdk",
+ "tokio",
+ "tracing-subscriber",
+ "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -2914,6 +2941,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-stream",
  "tokio-util",
  "tower",
  "tracing",
