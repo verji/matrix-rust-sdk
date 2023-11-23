@@ -35,6 +35,7 @@ mod room;
 mod room_info;
 mod room_list;
 mod room_member;
+mod ruma;
 mod session_verification;
 mod sync_service;
 mod task_handle;
@@ -51,8 +52,8 @@ use matrix_sdk_ui::timeline::{BackPaginationStatus, EventItemOrigin};
 use self::{
     encryption::SteadyStateError,
     error::ClientError,
+    ruma::{MediaSourceExt, Mentions, RoomMessageEventContentWithoutRelationExt},
     task_handle::TaskHandle,
-    timeline::{MediaSourceExt, Mentions, RoomMessageEventContentWithoutRelationExt},
 };
 
 uniffi::include_scaffolding!("api");
