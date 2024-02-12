@@ -607,8 +607,7 @@ impl BaseClient {
         // event. If we found one, set it as the latest and delete any older
         // encrypted events
         if let Some((found, found_index)) = self.decrypt_latest_suitable_event(room).await {
-            room.on_latest_event_decrypted(found, found_index);
-            changes.room_infos.insert(room.room_id().to_owned(), room.clone_info());
+            room.on_latest_event_decrypted(found, found_index, changes);
         }
     }
 
@@ -664,7 +663,7 @@ impl BaseClient {
             let mut changes = StateChanges::default();
             changes.add_room(room_info.clone());
             self.store.save_changes(&changes).await?; // Update the store
-            room.update_summary(room_info); // Update the cached room handle
+            room.set_room_info(room_info); // Update the cached room handle
         }
 
         Ok(room)
@@ -685,7 +684,7 @@ impl BaseClient {
             let mut changes = StateChanges::default();
             changes.add_room(room_info.clone());
             self.store.save_changes(&changes).await?; // Update the store
-            room.update_summary(room_info); // Update the cached room handle
+            room.set_room_info(room_info); // Update the cached room handle
         }
 
         Ok(())
@@ -917,7 +916,7 @@ impl BaseClient {
         let sync_lock = self.sync_lock().write().await;
         self.store.save_changes(&changes).await?;
         *self.store.sync_token.write().await = Some(response.next_batch.clone());
-        self.apply_changes(&changes).await;
+        self.apply_changes(&changes);
         drop(sync_lock);
 
         info!("Processed a sync response in {:?}", now.elapsed());
@@ -934,14 +933,14 @@ impl BaseClient {
         Ok(response)
     }
 
-    pub(crate) async fn apply_changes(&self, changes: &StateChanges) {
+    pub(crate) fn apply_changes(&self, changes: &StateChanges) {
         if changes.account_data.contains_key(&GlobalAccountDataEventType::IgnoredUserList) {
             self.ignore_user_list_changes.set(());
         }
 
         for (room_id, room_info) in &changes.room_infos {
             if let Some(room) = self.store.get_room(room_id) {
-                room.update_summary(room_info.clone())
+                room.set_room_info(room_info.clone())
             }
         }
     }
@@ -1035,7 +1034,7 @@ impl BaseClient {
             changes.add_room(room_info);
 
             self.store.save_changes(&changes).await?;
-            self.apply_changes(&changes).await;
+            self.apply_changes(&changes);
         }
 
         Ok(MembersResponse {

@@ -432,12 +432,6 @@ impl Room {
         self.inner.read().latest_event.as_deref().cloned()
     }
 
-    /// Update the last event in the room
-    #[cfg(all(feature = "e2e-encryption", feature = "experimental-sliding-sync"))]
-    pub(crate) fn set_latest_event(&self, latest_event: Option<Box<LatestEvent>>) {
-        self.inner.update(|info| info.latest_event = latest_event);
-    }
-
     /// Return the most recent few encrypted events. When the keys come through
     /// to decrypt these, the most recent relevant one will replace
     /// latest_event. (We can't tell which one is relevant until
@@ -454,10 +448,23 @@ impl Room {
     ///
     /// Panics if index is not a valid index in the latest_encrypted_events
     /// list.
+    ///
+    /// It is the responsibility of the caller to apply the changes into the
+    /// state store after calling this function.
     #[cfg(all(feature = "e2e-encryption", feature = "experimental-sliding-sync"))]
-    pub(crate) fn on_latest_event_decrypted(&self, latest_event: Box<LatestEvent>, index: usize) {
-        self.set_latest_event(Some(latest_event));
+    pub(crate) fn on_latest_event_decrypted(
+        &self,
+        latest_event: Box<LatestEvent>,
+        index: usize,
+        changes: &mut crate::StateChanges,
+    ) {
         self.latest_encrypted_events.write().unwrap().drain(0..=index);
+
+        let room_info = changes
+            .room_infos
+            .entry(self.room_id().to_owned())
+            .or_insert_with(|| self.clone_info());
+        room_info.latest_event = Some(latest_event);
     }
 
     /// Get the list of users ids that are considered to be joined members of
@@ -623,9 +630,10 @@ impl Room {
         self.inner.get()
     }
 
-    /// Update the summary with given RoomInfo
-    pub fn update_summary(&self, summary: RoomInfo) {
-        self.inner.set(summary);
+    /// Update the inner summary with the given RoomInfo, and notify
+    /// subscribers.
+    pub fn set_room_info(&self, room_info: RoomInfo) {
+        self.inner.set(room_info);
     }
 
     /// Get the `RoomMember` with the given `user_id`.
@@ -1677,6 +1685,50 @@ mod tests {
         );
     }
 
+    #[async_test]
+    #[cfg(feature = "experimental-sliding-sync")]
+    async fn test_setting_the_latest_event_doesnt_cause_a_room_info_update() {
+        // Given a room,
+        let client = crate::BaseClient::new();
+
+        client
+            .set_session_meta(crate::SessionMeta {
+                user_id: user_id!("@alice:example.org").into(),
+                device_id: ruma::device_id!("AYEAYEAYE").into(),
+            })
+            .await
+            .unwrap();
+
+        let room_id = room_id!("!test:localhost");
+        let room = client.get_or_create_room(room_id, RoomState::Joined);
+
+        // That has an encrypted event,
+        add_encrypted_event(&room, "$A");
+        // Sanity: it has no latest_event
+        assert!(room.latest_event().is_none());
+
+        // When I set up an observer on the latest_event,
+        let mut room_info_subscriber = room.subscribe_info();
+
+        // And I provide a decrypted event to replace the encrypted one,
+        let event = make_latest_event("$A");
+
+        let mut changes = StateChanges::default();
+        room.on_latest_event_decrypted(event.clone(), 0, &mut changes);
+
+        // The subscriber isn't notified at this point.
+        stream_assert::assert_pending!(room_info_subscriber);
+
+        // Then updating the room info will store the event,
+        client.apply_changes(&changes);
+        assert_eq!(room.latest_event().unwrap().event_id(), event.event_id());
+
+        // And wake up the subscriber.
+        use futures_util::FutureExt as _;
+        assert!(room_info_subscriber.next().now_or_never().is_some());
+        stream_assert::assert_pending!(room_info_subscriber);
+    }
+
     #[test]
     #[cfg(feature = "experimental-sliding-sync")]
     fn when_we_provide_a_newly_decrypted_event_it_replaces_latest_event() {
@@ -1688,7 +1740,9 @@ mod tests {
 
         // When I provide a decrypted event to replace the encrypted one
         let event = make_latest_event("$A");
-        room.on_latest_event_decrypted(event.clone(), 0);
+        let mut changes = StateChanges::default();
+        room.on_latest_event_decrypted(event.clone(), 0, &mut changes);
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
 
         // Then is it stored
         assert_eq!(room.latest_event().unwrap().event_id(), event.event_id());
@@ -1708,7 +1762,9 @@ mod tests {
         // When I provide a latest event
         let new_event = make_latest_event("$1");
         let new_event_index = 1;
-        room.on_latest_event_decrypted(new_event.clone(), new_event_index);
+        let mut changes = StateChanges::default();
+        room.on_latest_event_decrypted(new_event.clone(), new_event_index, &mut changes);
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
 
         // Then the encrypted events list is shortened to only newer events
         let enc_evs = room.latest_encrypted_events();
@@ -1733,7 +1789,9 @@ mod tests {
         // When I provide a latest event and say it was the very latest
         let new_event = make_latest_event("$3");
         let new_event_index = 3;
-        room.on_latest_event_decrypted(new_event, new_event_index);
+        let mut changes = StateChanges::default();
+        room.on_latest_event_decrypted(new_event, new_event_index, &mut changes);
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
 
         // Then the encrypted events list ie empty
         let enc_evs = room.latest_encrypted_events();
