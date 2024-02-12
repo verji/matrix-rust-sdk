@@ -1,7 +1,7 @@
 use std::{fmt::Debug, sync::Arc, time::Duration};
 
 use eyeball_im::VectorDiff;
-use futures_util::{pin_mut, StreamExt};
+use futures_util::{pin_mut, StreamExt, TryFutureExt};
 use matrix_sdk::{
     ruma::{
         api::client::sync::sync_events::{
@@ -12,9 +12,16 @@ use matrix_sdk::{
     },
     RoomListEntry as MatrixRoomListEntry,
 };
-use matrix_sdk_ui::room_list_service::filters::{
-    new_filter_all, new_filter_all_non_left, new_filter_fuzzy_match_room_name, new_filter_none,
-    new_filter_normalized_match_room_name,
+use matrix_sdk_ui::{
+    room_list_service::{
+        filters::{
+            new_filter_all, new_filter_any, new_filter_category, new_filter_fuzzy_match_room_name,
+            new_filter_non_left, new_filter_none, new_filter_normalized_match_room_name,
+            new_filter_unread, RoomCategory,
+        },
+        BoxedFilterFn,
+    },
+    timeline::default_event_filter,
 };
 use tokio::sync::RwLock;
 
@@ -23,6 +30,7 @@ use crate::{
     room::Room,
     room_info::RoomInfo,
     timeline::{EventTimelineItem, Timeline},
+    timeline_event_filter::TimelineEventTypeFilter,
     TaskHandle, RUNTIME,
 };
 
@@ -38,6 +46,12 @@ pub enum RoomListError {
     RoomNotFound { room_name: String },
     #[error("invalid room ID: {error}")]
     InvalidRoomId { error: String },
+    #[error("A timeline instance already exists for room {room_name}")]
+    TimelineAlreadyExists { room_name: String },
+    #[error("A timeline instance hasn't been initialized for room {room_name}")]
+    TimelineNotInitialized { room_name: String },
+    #[error("Timeline couldn't be initialized: {error}")]
+    InitializingTimeline { error: String },
 }
 
 impl From<matrix_sdk_ui::room_list_service::Error> for RoomListError {
@@ -49,6 +63,12 @@ impl From<matrix_sdk_ui::room_list_service::Error> for RoomListError {
             UnknownList(list_name) => Self::UnknownList { list_name },
             InputCannotBeApplied(_) => Self::InputCannotBeApplied,
             RoomNotFound(room_id) => Self::RoomNotFound { room_name: room_id.to_string() },
+            TimelineAlreadyExists(room_id) => {
+                Self::TimelineAlreadyExists { room_name: room_id.to_string() }
+            }
+            InitializingTimeline(source) => {
+                Self::InitializingTimeline { error: source.to_string() }
+            }
         }
     }
 }
@@ -193,7 +213,10 @@ impl RoomList {
         listener: Box<dyn RoomListEntriesListener>,
     ) -> RoomListEntriesWithDynamicAdaptersResult {
         let (entries_stream, dynamic_entries_controller) =
-            self.inner.entries_with_dynamic_adapters(page_size.try_into().unwrap());
+            self.inner.entries_with_dynamic_adapters(
+                page_size.try_into().unwrap(),
+                self.room_list_service.inner.client().roominfo_update_receiver(),
+            );
 
         RoomListEntriesWithDynamicAdaptersResult {
             controller: Arc::new(RoomListDynamicEntriesController::new(
@@ -375,19 +398,8 @@ impl RoomListDynamicEntriesController {
 #[uniffi::export]
 impl RoomListDynamicEntriesController {
     fn set_filter(&self, kind: RoomListEntriesDynamicFilterKind) -> bool {
-        use RoomListEntriesDynamicFilterKind as Kind;
-
-        match kind {
-            Kind::All => self.inner.set_filter(new_filter_all()),
-            Kind::AllNonLeft => self.inner.set_filter(new_filter_all_non_left(&self.client)),
-            Kind::None => self.inner.set_filter(new_filter_none()),
-            Kind::NormalizedMatchRoomName { pattern } => {
-                self.inner.set_filter(new_filter_normalized_match_room_name(&self.client, &pattern))
-            }
-            Kind::FuzzyMatchRoomName { pattern } => {
-                self.inner.set_filter(new_filter_fuzzy_match_room_name(&self.client, &pattern))
-            }
-        }
+        let FilterWrapper(filter) = FilterWrapper::from(&self.client, kind);
+        self.inner.set_filter(filter)
     }
 
     fn add_one_page(&self) {
@@ -401,11 +413,58 @@ impl RoomListDynamicEntriesController {
 
 #[derive(uniffi::Enum)]
 pub enum RoomListEntriesDynamicFilterKind {
-    All,
-    AllNonLeft,
+    All { filters: Vec<RoomListEntriesDynamicFilterKind> },
+    Any { filters: Vec<RoomListEntriesDynamicFilterKind> },
+    NonLeft,
+    Unread,
+    Category { expect: RoomListFilterCategory },
     None,
     NormalizedMatchRoomName { pattern: String },
     FuzzyMatchRoomName { pattern: String },
+}
+
+#[derive(uniffi::Enum)]
+pub enum RoomListFilterCategory {
+    Group,
+    People,
+}
+
+impl From<RoomListFilterCategory> for RoomCategory {
+    fn from(value: RoomListFilterCategory) -> Self {
+        match value {
+            RoomListFilterCategory::Group => Self::Group,
+            RoomListFilterCategory::People => Self::People,
+        }
+    }
+}
+
+/// Custom internal type to transform a `RoomListEntriesDynamicFilterKind` into
+/// a `BoxedFilterFn`.
+struct FilterWrapper(BoxedFilterFn);
+
+impl FilterWrapper {
+    fn from(client: &matrix_sdk::Client, value: RoomListEntriesDynamicFilterKind) -> Self {
+        use RoomListEntriesDynamicFilterKind as Kind;
+
+        match value {
+            Kind::All { filters } => Self(Box::new(new_filter_all(
+                filters.into_iter().map(|filter| FilterWrapper::from(client, filter).0).collect(),
+            ))),
+            Kind::Any { filters } => Self(Box::new(new_filter_any(
+                filters.into_iter().map(|filter| FilterWrapper::from(client, filter).0).collect(),
+            ))),
+            Kind::NonLeft => Self(Box::new(new_filter_non_left(client))),
+            Kind::Unread => Self(Box::new(new_filter_unread(client))),
+            Kind::Category { expect } => Self(Box::new(new_filter_category(client, expect.into()))),
+            Kind::None => Self(Box::new(new_filter_none())),
+            Kind::NormalizedMatchRoomName { pattern } => {
+                Self(Box::new(new_filter_normalized_match_room_name(client, &pattern)))
+            }
+            Kind::FuzzyMatchRoomName { pattern } => {
+                Self(Box::new(new_filter_fuzzy_match_room_name(client, &pattern)))
+            }
+        }
+    }
 }
 
 #[derive(uniffi::Object)]
@@ -441,20 +500,43 @@ impl RoomListItem {
         Ok(RoomInfo::new(self.inner.inner_room(), avatar_url, latest_event).await?)
     }
 
-    /// Building a `Room`.
-    ///
-    /// Be careful that building a `Room` builds its entire `Timeline` at the
-    /// same time.
-    async fn full_room(&self) -> Arc<Room> {
-        Arc::new(Room::with_timeline(
-            self.inner.inner_room().clone(),
-            Arc::new(RwLock::new(Some(Timeline::from_arc(self.inner.timeline().await)))),
-        ))
+    /// Building a `Room`. If its internal timeline hasn't been initialized
+    /// it'll fail.
+    async fn full_room(&self) -> Result<Arc<Room>, RoomListError> {
+        if let Some(timeline) = self.inner.timeline() {
+            Ok(Arc::new(Room::with_timeline(
+                self.inner.inner_room().clone(),
+                Arc::new(RwLock::new(Some(Timeline::from_arc(timeline)))),
+            )))
+        } else {
+            Err(RoomListError::TimelineNotInitialized {
+                room_name: self.inner.inner_room().room_id().to_string(),
+            })
+        }
     }
 
-    // Temporary workaround for coroutine leaks on Kotlin.
-    fn full_room_blocking(&self) -> Arc<Room> {
-        RUNTIME.block_on(async move { self.full_room().await })
+    /// Checks whether the Room's timeline has been initialized before.
+    fn is_timeline_initialized(&self) -> bool {
+        self.inner.is_timeline_initialized()
+    }
+
+    /// Initializes the timeline for this room using the provided parameters.
+    ///
+    /// * `event_type_filter` - An optional [`TimelineEventTypeFilter`] to be
+    ///   used to filter timeline events besides the default timeline filter. If
+    ///   `None` is passed, only the default timeline filter will be used.
+    async fn init_timeline(
+        &self,
+        event_type_filter: Option<Arc<TimelineEventTypeFilter>>,
+    ) -> Result<(), RoomListError> {
+        let mut timeline_builder = self.inner.default_room_timeline_builder().await;
+        if let Some(event_type_filter) = event_type_filter {
+            timeline_builder = timeline_builder.event_filter(move |event, room_version_id| {
+                // Always perform the default filter first
+                default_event_filter(event, room_version_id) && event_type_filter.filter(event)
+            });
+        }
+        self.inner.init_timeline_with_builder(timeline_builder).map_err(RoomListError::from).await
     }
 
     fn subscribe(&self, settings: Option<RoomSubscription>) {
@@ -467,14 +549,6 @@ impl RoomListItem {
 
     async fn latest_event(&self) -> Option<Arc<EventTimelineItem>> {
         self.inner.latest_event().await.map(EventTimelineItem).map(Arc::new)
-    }
-
-    fn has_unread_notifications(&self) -> bool {
-        self.inner.has_unread_notifications()
-    }
-
-    fn unread_notifications(&self) -> Arc<UnreadNotificationsCount> {
-        Arc::new(self.inner.unread_notifications().into())
     }
 }
 

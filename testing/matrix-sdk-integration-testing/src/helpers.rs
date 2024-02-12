@@ -10,6 +10,7 @@ use anyhow::Result;
 use assign::assign;
 use matrix_sdk::{
     config::{RequestConfig, SyncSettings},
+    encryption::EncryptionSettings,
     ruma::api::client::{account::register::v3::Request as RegistrationRequest, uiaa},
     Client,
 };
@@ -23,12 +24,18 @@ static USERS: Lazy<Mutex<HashMap<String, (Client, TempDir)>>> = Lazy::new(Mutex:
 pub struct TestClientBuilder {
     username: String,
     use_sqlite: bool,
-    bootstrap_cross_signing: bool,
+    encryption_settings: EncryptionSettings,
+    http_proxy: Option<String>,
 }
 
 impl TestClientBuilder {
     pub fn new(username: impl Into<String>) -> Self {
-        Self { username: username.into(), use_sqlite: false, bootstrap_cross_signing: false }
+        Self {
+            username: username.into(),
+            use_sqlite: false,
+            encryption_settings: Default::default(),
+            http_proxy: None,
+        }
     }
 
     pub fn randomize_username(mut self) -> Self {
@@ -42,8 +49,13 @@ impl TestClientBuilder {
         self
     }
 
-    pub fn bootstrap_cross_signing(mut self) -> Self {
-        self.bootstrap_cross_signing = true;
+    pub fn encryption_settings(mut self, encryption_settings: EncryptionSettings) -> Self {
+        self.encryption_settings = encryption_settings;
+        self
+    }
+
+    pub fn http_proxy(mut self, proxy: String) -> Self {
+        self.http_proxy = Some(proxy);
         self
     }
 
@@ -64,15 +76,11 @@ impl TestClientBuilder {
             .user_agent("matrix-sdk-integration-tests")
             .homeserver_url(homeserver_url)
             .sliding_sync_proxy(sliding_sync_proxy_url)
+            .with_encryption_settings(self.encryption_settings)
             .request_config(RequestConfig::short_retry());
 
-        if self.bootstrap_cross_signing {
-            client_builder = client_builder.with_encryption_settings(
-                matrix_sdk::encryption::EncryptionSettings {
-                    auto_enable_cross_signing: true,
-                    ..Default::default()
-                },
-            );
+        if let Some(proxy) = self.http_proxy {
+            client_builder = client_builder.proxy(proxy);
         }
 
         let client = if self.use_sqlite {
@@ -84,6 +92,7 @@ impl TestClientBuilder {
         // safe to assume we have not registered this user yet, but ignore if we did
 
         let auth = client.matrix_auth();
+        let mut try_login = true;
         if let Err(resp) = auth.register(RegistrationRequest::new()).await {
             // FIXME: do actually check the registration types...
             if let Some(_response) = resp.as_uiaa_response() {
@@ -93,11 +102,13 @@ impl TestClientBuilder {
 
                     auth: Some(uiaa::AuthData::Dummy(uiaa::Dummy::new())),
                 });
-                // we don't care if this failed, then we just try to login anyways
-                let _ = auth.register(request).await;
+                // if this failed, we will attempt to login after.
+                try_login = auth.register(request).await.is_err();
             }
         }
-        auth.login_username(&self.username, &self.username).await?;
+        if try_login {
+            auth.login_username(&self.username, &self.username).await?;
+        }
         users.insert(self.username, (client.clone(), tmp_dir)); // keeping temp dir around so it doesn't get destroyed yet
 
         Ok(client)

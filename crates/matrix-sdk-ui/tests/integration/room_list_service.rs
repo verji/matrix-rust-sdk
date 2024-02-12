@@ -8,10 +8,11 @@ use eyeball_im::VectorDiff;
 use futures_util::{pin_mut, FutureExt, StreamExt};
 use imbl::vector;
 use matrix_sdk::Client;
+use matrix_sdk_base::sync::UnreadNotificationsCount;
 use matrix_sdk_test::async_test;
 use matrix_sdk_ui::{
     room_list_service::{
-        filters::{new_filter_all, new_filter_fuzzy_match_room_name, new_filter_none},
+        filters::{new_filter_fuzzy_match_room_name, new_filter_non_left, new_filter_none},
         Error, Input, InputResult, RoomListEntry, RoomListLoadingState, State, SyncIndicator,
         ALL_ROOMS_LIST_NAME as ALL_ROOMS, INVITES_LIST_NAME as INVITES,
         VISIBLE_ROOMS_LIST_NAME as VISIBLE_ROOMS,
@@ -20,7 +21,7 @@ use matrix_sdk_ui::{
     RoomListService,
 };
 use ruma::{
-    api::client::sync::sync_events::{v4::RoomSubscription, UnreadNotificationsCount},
+    api::client::sync::sync_events::v4::RoomSubscription,
     assign, event_id,
     events::{room::message::RoomMessageEventContent, StateEventType},
     mxc_uri, room_id, uint,
@@ -275,6 +276,7 @@ async fn test_sync_all_states() -> Result<(), Error> {
                         ["m.room.avatar", ""],
                         ["m.room.encryption", ""],
                         ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
                         ["m.room.power_levels", ""],
                     ],
                     "filters": {
@@ -314,7 +316,10 @@ async fn test_sync_all_states() -> Result<(), Error> {
                 "receipts": {
                     "enabled": true,
                     "rooms": ["*"]
-                }
+                },
+                "typing": {
+                    "enabled": true,
+                },
             },
         },
         respond with = {
@@ -1594,7 +1599,8 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
 
     let all_rooms = room_list.all_rooms().await?;
 
-    let (dynamic_entries_stream, dynamic_entries) = all_rooms.entries_with_dynamic_adapters(5);
+    let (dynamic_entries_stream, dynamic_entries) =
+        all_rooms.entries_with_dynamic_adapters(5, client.roominfo_update_receiver());
     pin_mut!(dynamic_entries_stream);
 
     sync_then_assert_request_and_fake_response! {
@@ -1638,7 +1644,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
     assert_pending!(dynamic_entries_stream);
 
     // Now, let's define a filter.
-    dynamic_entries.set_filter(new_filter_fuzzy_match_room_name(&client, "mat ba"));
+    dynamic_entries.set_filter(Box::new(new_filter_fuzzy_match_room_name(&client, "mat ba")));
 
     // Assert the dynamic entries.
     assert_entries_batch! {
@@ -1794,7 +1800,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
     assert_pending!(dynamic_entries_stream);
 
     // Now, let's change the dynamic entries!
-    dynamic_entries.set_filter(new_filter_fuzzy_match_room_name(&client, "hell"));
+    dynamic_entries.set_filter(Box::new(new_filter_fuzzy_match_room_name(&client, "hell")));
 
     // Assert the dynamic entries.
     assert_entries_batch! {
@@ -1806,7 +1812,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
     assert_pending!(dynamic_entries_stream);
 
     // Now, let's change again the dynamic filter!
-    dynamic_entries.set_filter(new_filter_none());
+    dynamic_entries.set_filter(Box::new(new_filter_none()));
 
     // Assert the dynamic entries.
     assert_entries_batch! {
@@ -1817,7 +1823,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
     };
 
     // Now, let's change again the dynamic filter!
-    dynamic_entries.set_filter(new_filter_all());
+    dynamic_entries.set_filter(Box::new(new_filter_non_left(&client)));
 
     // Assert the dynamic entries.
     assert_entries_batch! {
@@ -1881,6 +1887,208 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
         ];
         end;
     };
+    assert_pending!(dynamic_entries_stream);
+
+    Ok(())
+}
+
+#[async_test]
+async fn test_dynamic_entries_stream_manual_update() -> Result<(), Error> {
+    let (client, server, room_list) = new_room_list_service().await?;
+
+    let sync = room_list.sync();
+    pin_mut!(sync);
+
+    let all_rooms = room_list.all_rooms().await?;
+
+    let (dynamic_entries_stream, dynamic_entries) =
+        all_rooms.entries_with_dynamic_adapters(5, client.roominfo_update_receiver());
+    pin_mut!(dynamic_entries_stream);
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        states = Init => SettingUp,
+        assert request >= {
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 19]],
+                },
+            },
+        },
+        respond with = {
+            "pos": "0",
+            "lists": {
+                ALL_ROOMS: {
+                    "count": 10,
+                    "ops": [
+                        {
+                            "op": "SYNC",
+                            "range": [0, 0],
+                            "room_ids": [
+                                "!r0:bar.org",
+                            ],
+                        },
+                    ],
+                },
+            },
+            "rooms": {
+                "!r0:bar.org": {
+                    "name": "Matrix Foobar",
+                    "initial": true,
+                    "timeline": [],
+                },
+            },
+        },
+    };
+
+    // Ensure the dynamic entries' stream is pending because there is no filter set
+    // yet.
+    assert_pending!(dynamic_entries_stream);
+
+    // Now, let's define a filter.
+    dynamic_entries.set_filter(Box::new(new_filter_fuzzy_match_room_name(&client, "mat ba")));
+
+    // Assert the dynamic entries.
+    assert_entries_batch! {
+        [dynamic_entries_stream]
+        // Receive a `reset` because the filter has been reset/set for the first time.
+        reset [ F("!r0:bar.org") ];
+        end;
+    };
+    assert_pending!(dynamic_entries_stream);
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        states = SettingUp => Running,
+        assert request >= {
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 9]],
+                },
+                VISIBLE_ROOMS: {
+                    "ranges": [[0, 19]],
+                },
+                INVITES: {
+                    "ranges": [[0, 19]],
+                },
+            },
+        },
+        respond with = {
+            "pos": "1",
+            "lists": {
+                ALL_ROOMS: {
+                    "count": 10,
+                    "ops": [
+                        {
+                            "op": "SYNC",
+                            "range": [0, 1],
+                            "room_ids": [
+                                "!r1:bar.org",
+                                "!r0:bar.org",
+                            ],
+                        },
+                    ],
+                },
+                VISIBLE_ROOMS: {
+                    "count": 0,
+                },
+                INVITES: {
+                    "count": 0,
+                },
+            },
+            "rooms": {
+                "!r1:bar.org": {
+                    "name": "Matrix Bar",
+                    "initial": true,
+                    "timeline": [],
+                },
+            },
+        },
+    };
+
+    // Assert the dynamic entries.
+    assert_entries_batch! {
+        [dynamic_entries_stream]
+        set[0] [ F("!r1:bar.org") ];
+        insert[1] [ F("!r0:bar.org") ];
+        end;
+    };
+
+    // Variation 1: Send manual update after reading stream, !r0 should be at new
+    // pos 1
+    let room = client.get_room(room_id!("!r0:bar.org")).unwrap();
+    room.set_room_info(room.clone_info(), true);
+
+    assert_entries_batch! {
+        [dynamic_entries_stream]
+        set[1] [ F("!r0:bar.org") ];
+        end;
+    };
+
+    assert_pending!(dynamic_entries_stream);
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        states = Running => Running,
+        assert request >= {
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 9]],
+                },
+                VISIBLE_ROOMS: {
+                    "ranges": [[0, 19]],
+                },
+                INVITES: {
+                    "ranges": [[0, 0]],
+                },
+            },
+        },
+        respond with = {
+            "pos": "2",
+            "lists": {
+                ALL_ROOMS: {
+                    "count": 10,
+                    "ops": [
+                        {
+                            "op": "SYNC",
+                            "range": [0, 1],
+                            "room_ids": [
+                                "!r0:bar.org",
+                                "!r1:bar.org",
+                            ],
+                        },
+                    ],
+                },
+                VISIBLE_ROOMS: {
+                    "count": 0,
+                },
+                INVITES: {
+                    "count": 0,
+                },
+            },
+            "rooms": {},
+        },
+    };
+
+    // Variation 2: Send manual update before reading stream, !r0 should still be at
+    // previous pos 1
+    let room = client.get_room(room_id!("!r0:bar.org")).unwrap();
+    room.set_room_info(room.clone_info(), true);
+
+    assert_entries_batch! {
+        [dynamic_entries_stream]
+        set[1] [ F("!r0:bar.org") ];
+        end;
+    };
+
+    // Assert the dynamic entries.
+    assert_entries_batch! {
+        [dynamic_entries_stream]
+        set[0] [ F("!r0:bar.org") ];
+        set[1] [ F("!r1:bar.org") ];
+        end;
+    };
+
     assert_pending!(dynamic_entries_stream);
 
     Ok(())
@@ -2286,10 +2494,9 @@ async fn test_room_unread_notifications() -> Result<(), Error> {
 
     let room = room_list.room(room_id).await.unwrap();
 
-    assert!(room.has_unread_notifications().not());
     assert_matches!(
-        room.unread_notifications(),
-        UnreadNotificationsCount { highlight_count: None, notification_count: None, .. }
+        room.unread_notification_counts(),
+        UnreadNotificationsCount { highlight_count: 0, notification_count: 0 }
     );
 
     sync_then_assert_request_and_fake_response! {
@@ -2314,17 +2521,9 @@ async fn test_room_unread_notifications() -> Result<(), Error> {
         },
     };
 
-    assert!(room.has_unread_notifications());
     assert_matches!(
-        room.unread_notifications(),
-        UnreadNotificationsCount {
-            highlight_count,
-            notification_count,
-            ..
-        } => {
-            assert_eq!(highlight_count, Some(uint!(1)));
-            assert_eq!(notification_count, Some(uint!(2)));
-        }
+        room.unread_notification_counts(),
+        UnreadNotificationsCount { highlight_count: 1, notification_count: 2 }
     );
 
     Ok(())
@@ -2369,7 +2568,8 @@ async fn test_room_timeline() -> Result<(), Error> {
     };
 
     let room = room_list.room(room_id).await?;
-    let timeline = room.timeline().await;
+    room.init_timeline_with_builder(room.default_room_timeline_builder().await).await?;
+    let timeline = room.timeline().unwrap();
 
     let (previous_timeline_items, mut timeline_items_stream) = timeline.subscribe().await;
 
@@ -2450,6 +2650,7 @@ async fn test_room_latest_event() -> Result<(), Error> {
     };
 
     let room = room_list.room(room_id).await?;
+    room.init_timeline_with_builder(room.default_room_timeline_builder().await).await?;
 
     // The latest event does not exist.
     assert!(room.latest_event().await.is_none());
@@ -2501,7 +2702,7 @@ async fn test_room_latest_event() -> Result<(), Error> {
     assert_eq!(latest_event.event_id(), Some(event_id!("$x1:bar.org")));
 
     // Now let's compare with the result of the `Timeline`.
-    let timeline = room.timeline().await;
+    let timeline = room.timeline().unwrap();
 
     // The latest event matches the latest event of the `Timeline`.
     assert_matches!(

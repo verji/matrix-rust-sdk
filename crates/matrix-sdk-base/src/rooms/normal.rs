@@ -34,6 +34,7 @@ use ruma::{
         ignored_user_list::IgnoredUserListEventContent,
         receipt::{Receipt, ReceiptThread, ReceiptType},
         room::{
+            avatar::RoomAvatarEventContent,
             encryption::RoomEncryptionEventContent,
             guest_access::GuestAccess,
             history_visibility::HistoryVisibility,
@@ -53,11 +54,12 @@ use ruma::{
     RoomId, RoomVersionId, UserId,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use tracing::{debug, field::debug, info, instrument, trace, warn};
 
 use super::{
     members::{MemberInfo, MemberRoomInfo},
-    BaseRoomInfo, DisplayName, RoomCreateWithCreatorEventContent, RoomMember,
+    BaseRoomInfo, DisplayName, RoomCreateWithCreatorEventContent, RoomMember, RoomNotableTags,
 };
 #[cfg(feature = "experimental-sliding-sync")]
 use crate::latest_event::LatestEvent;
@@ -69,6 +71,20 @@ use crate::{
     MinimalStateEvent, OriginalMinimalStateEvent, RoomMemberships,
 };
 
+/// A summary of changes to room information.
+///
+/// It also indicates whether this update should update the room list.
+#[derive(Debug, Clone)]
+pub struct RoomInfoUpdate {
+    /// The room which was updated.
+    pub room_id: OwnedRoomId,
+    /// Whether this event should trigger the room list to update.
+    ///
+    /// If the change is minor or if another action already causes the room list
+    /// to update, this should be false to avoid duplicate updates.
+    pub trigger_room_list_update: bool,
+}
+
 /// The underlying room data structure collecting state for joined, left and
 /// invited rooms.
 #[derive(Debug, Clone)]
@@ -76,6 +92,7 @@ pub struct Room {
     room_id: OwnedRoomId,
     own_user_id: OwnedUserId,
     inner: SharedObservable<RoomInfo>,
+    roominfo_update_sender: broadcast::Sender<RoomInfoUpdate>,
     store: Arc<DynStateStore>,
 
     /// The most recent few encrypted events. When the keys come through to
@@ -133,23 +150,27 @@ impl From<&MembershipState> for RoomState {
 
 impl Room {
     /// The size of the latest_encrypted_events RingBuffer
+    // SAFETY: `new_unchecked` is safe because 10 is not zero.
     #[cfg(all(feature = "e2e-encryption", feature = "experimental-sliding-sync"))]
-    const MAX_ENCRYPTED_EVENTS: usize = 10;
+    const MAX_ENCRYPTED_EVENTS: std::num::NonZeroUsize =
+        unsafe { std::num::NonZeroUsize::new_unchecked(10) };
 
     pub(crate) fn new(
         own_user_id: &UserId,
         store: Arc<DynStateStore>,
         room_id: &RoomId,
         room_state: RoomState,
+        roominfo_update_sender: broadcast::Sender<RoomInfoUpdate>,
     ) -> Self {
         let room_info = RoomInfo::new(room_id, room_state);
-        Self::restore(own_user_id, store, room_info)
+        Self::restore(own_user_id, store, room_info, roominfo_update_sender)
     }
 
     pub(crate) fn restore(
         own_user_id: &UserId,
         store: Arc<DynStateStore>,
         room_info: RoomInfo,
+        roominfo_update_sender: broadcast::Sender<RoomInfoUpdate>,
     ) -> Self {
         Self {
             own_user_id: own_user_id.into(),
@@ -160,6 +181,7 @@ impl Room {
             latest_encrypted_events: Arc::new(SyncRwLock::new(RingBuffer::new(
                 Self::MAX_ENCRYPTED_EVENTS,
             ))),
+            roominfo_update_sender,
         }
     }
 
@@ -194,6 +216,11 @@ impl Room {
     /// encrypted rooms.
     pub fn num_unread_messages(&self) -> u64 {
         self.inner.read().read_receipts.num_unread
+    }
+
+    /// Get the detailed information about read receipts for the room.
+    pub fn read_receipts(&self) -> RoomReadReceipts {
+        self.inner.read().read_receipts.clone()
     }
 
     /// Get the number of unread notifications (computed client-side).
@@ -333,6 +360,12 @@ impl Room {
     /// want to re-invite them.
     pub fn direct_targets(&self) -> HashSet<OwnedUserId> {
         self.inner.read().base_info.dm_targets.clone()
+    }
+
+    /// If this room is a direct message, returns the number of members that
+    /// we're sharing the room with.
+    pub fn direct_targets_length(&self) -> usize {
+        self.inner.read().base_info.dm_targets.len()
     }
 
     /// Is the room encrypted.
@@ -630,10 +663,17 @@ impl Room {
         self.inner.get()
     }
 
-    /// Update the inner summary with the given RoomInfo, and notify
-    /// subscribers.
-    pub fn set_room_info(&self, room_info: RoomInfo) {
+    /// Update the summary with given RoomInfo.
+    ///
+    /// This also triggers an update for room info observers if
+    /// `trigger_room_list_update` is true.
+    pub fn set_room_info(&self, room_info: RoomInfo, trigger_room_list_update: bool) {
         self.inner.set(room_info);
+
+        // Ignore error if no receiver exists.
+        let _ = self
+            .roominfo_update_sender
+            .send(RoomInfoUpdate { room_id: self.room_id.clone(), trigger_room_list_update });
     }
 
     /// Get the `RoomMember` with the given `user_id`.
@@ -718,6 +758,21 @@ impl Room {
         }
     }
 
+    /// Check whether the room is marked as favourite.
+    ///
+    /// A room is considered favourite if it has received the `m.favourite` tag.
+    pub fn is_favourite(&self) -> bool {
+        self.inner.read().base_info.notable_tags.contains(RoomNotableTags::FAVOURITE)
+    }
+
+    /// Check whether the room is marked as low priority.
+    ///
+    /// A room is considered low priority if it has received the `m.lowpriority`
+    /// tag.
+    pub fn is_low_priority(&self) -> bool {
+        self.inner.read().base_info.notable_tags.contains(RoomNotableTags::LOW_PRIORITY)
+    }
+
     /// Get the receipt as an `OwnedEventId` and `Receipt` tuple for the given
     /// `receipt_type`, `thread` and `user_id` in this room.
     pub async fn load_user_receipt(
@@ -741,6 +796,12 @@ impl Room {
         self.store
             .get_event_room_receipt_events(self.room_id(), receipt_type, thread, event_id)
             .await
+    }
+
+    /// Returns a boolean indicating if this room has been manually marked as
+    /// unread
+    pub fn is_marked_unread(&self) -> bool {
+        self.inner.read().base_info.is_marked_unread
     }
 }
 
@@ -962,6 +1023,16 @@ impl RoomInfo {
             content: RoomNameEventContent::new(name),
             event_id: None,
         }));
+    }
+
+    /// Update the room avatar
+    pub fn update_avatar(&mut self, url: Option<OwnedMxcUri>) {
+        self.base_info.avatar = url.map(|url| {
+            let mut content = RoomAvatarEventContent::new();
+            content.url = Some(url);
+
+            MinimalStateEvent::Original(OriginalMinimalStateEvent { content, event_id: None })
+        });
     }
 
     /// Update the notifications count
@@ -1230,7 +1301,7 @@ impl RoomStateFilter {
 #[cfg(test)]
 mod tests {
     use std::{
-        ops::Sub,
+        ops::{Not, Sub},
         str::FromStr,
         sync::Arc,
         time::{Duration, SystemTime},
@@ -1262,6 +1333,7 @@ mod tests {
         user_id, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedUserId, UserId,
     };
     use serde_json::json;
+    use stream_assert::{assert_pending, assert_ready};
 
     #[cfg(feature = "experimental-sliding-sync")]
     use super::SyncInfo;
@@ -1270,7 +1342,7 @@ mod tests {
     use crate::latest_event::LatestEvent;
     use crate::{
         store::{MemoryStore, StateChanges, StateStore},
-        DisplayName, MinimalStateEvent, OriginalMinimalStateEvent,
+        BaseClient, DisplayName, MinimalStateEvent, OriginalMinimalStateEvent, SessionMeta,
     };
 
     #[test]
@@ -1337,6 +1409,7 @@ mod tests {
                 "encryption": null,
                 "guest_access": null,
                 "history_visibility": null,
+                "is_marked_unread": false,
                 "join_rules": null,
                 "max_power_level": 100,
                 "name": null,
@@ -1347,7 +1420,8 @@ mod tests {
                 "num_unread": 0,
                 "num_mentions": 0,
                 "num_notifications": 0,
-                "latest_read_receipt_event_id": null,
+                "latest_active": null,
+                "pending": []
             }
         });
 
@@ -1422,12 +1496,153 @@ mod tests {
         assert!(info.base_info.topic.is_none());
     }
 
+    #[async_test]
+    async fn test_is_favourite() {
+        // Given a room,
+        let client = BaseClient::new();
+
+        client
+            .set_session_meta(SessionMeta {
+                user_id: user_id!("@alice:example.org").into(),
+                device_id: ruma::device_id!("AYEAYEAYE").into(),
+            })
+            .await
+            .unwrap();
+
+        let room_id = room_id!("!test:localhost");
+        let room = client.get_or_create_room(room_id, RoomState::Joined);
+
+        // Sanity checks to ensure the room isn't marked as favourite.
+        assert!(room.is_favourite().not());
+
+        // Subscribe to the `RoomInfo`.
+        let mut room_info_subscriber = room.subscribe_info();
+
+        assert_pending!(room_info_subscriber);
+
+        // Create the tag.
+        let tag_raw = Raw::new(&json!({
+            "content": {
+                "tags": {
+                    "m.favourite": {
+                        "order": 0.0
+                    },
+                },
+            },
+            "type": "m.tag",
+        }))
+        .unwrap()
+        .cast();
+
+        // When the new tag is handled and applied.
+        let mut changes = StateChanges::default();
+        client.handle_room_account_data(room_id, &[tag_raw], &mut changes).await;
+        client.apply_changes(&changes, false);
+
+        // The `RoomInfo` is getting notified.
+        assert_ready!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
+
+        // The room is now marked as favourite.
+        assert!(room.is_favourite());
+
+        // Now, let's remove the tag.
+        let tag_raw = Raw::new(&json!({
+            "content": {
+                "tags": {},
+            },
+            "type": "m.tag"
+        }))
+        .unwrap()
+        .cast();
+        client.handle_room_account_data(room_id, &[tag_raw], &mut changes).await;
+        client.apply_changes(&changes, false);
+
+        // The `RoomInfo` is getting notified.
+        assert_ready!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
+
+        // The room is now marked as _not_ favourite.
+        assert!(room.is_favourite().not());
+    }
+
+    #[async_test]
+    async fn test_is_low_priority() {
+        // Given a room,
+        let client = BaseClient::new();
+
+        client
+            .set_session_meta(SessionMeta {
+                user_id: user_id!("@alice:example.org").into(),
+                device_id: ruma::device_id!("AYEAYEAYE").into(),
+            })
+            .await
+            .unwrap();
+
+        let room_id = room_id!("!test:localhost");
+        let room = client.get_or_create_room(room_id, RoomState::Joined);
+
+        // Sanity checks to ensure the room isn't marked as low priority.
+        assert!(!room.is_low_priority());
+
+        // Subscribe to the `RoomInfo`.
+        let mut room_info_subscriber = room.subscribe_info();
+
+        assert_pending!(room_info_subscriber);
+
+        // Create the tag.
+        let tag_raw = Raw::new(&json!({
+            "content": {
+                "tags": {
+                    "m.lowpriority": {
+                        "order": 0.0
+                    },
+                }
+            },
+            "type": "m.tag"
+        }))
+        .unwrap()
+        .cast();
+
+        // When the new tag is handled and applied.
+        let mut changes = StateChanges::default();
+        client.handle_room_account_data(room_id, &[tag_raw], &mut changes).await;
+        client.apply_changes(&changes, false);
+
+        // The `RoomInfo` is getting notified.
+        assert_ready!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
+
+        // The room is now marked as low priority.
+        assert!(room.is_low_priority());
+
+        // Now, let's remove the tag.
+        let tag_raw = Raw::new(&json!({
+            "content": {
+                "tags": {},
+            },
+            "type": "m.tag"
+        }))
+        .unwrap()
+        .cast();
+        client.handle_room_account_data(room_id, &[tag_raw], &mut changes).await;
+        client.apply_changes(&changes, false);
+
+        // The `RoomInfo` is getting notified.
+        assert_ready!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
+
+        // The room is now marked as _not_ low priority.
+        assert!(room.is_low_priority().not());
+    }
+
     fn make_room(room_type: RoomState) -> (Arc<MemoryStore>, Room) {
         let store = Arc::new(MemoryStore::new());
         let user_id = user_id!("@me:example.org");
         let room_id = room_id!("!test:localhost");
+        let (sender, _receiver) = tokio::sync::broadcast::channel(1);
 
-        (store.clone(), Room::new(user_id, store, room_id, room_type))
+        (store.clone(), Room::new(user_id, store, room_id, room_type, sender))
     }
 
     fn make_stripped_member_event(user_id: &UserId, name: &str) -> Raw<StrippedRoomMemberEvent> {
@@ -1689,10 +1904,11 @@ mod tests {
     #[cfg(feature = "experimental-sliding-sync")]
     async fn test_setting_the_latest_event_doesnt_cause_a_room_info_update() {
         // Given a room,
-        let client = crate::BaseClient::new();
+
+        let client = BaseClient::new();
 
         client
-            .set_session_meta(crate::SessionMeta {
+            .set_session_meta(SessionMeta {
                 user_id: user_id!("@alice:example.org").into(),
                 device_id: ruma::device_id!("AYEAYEAYE").into(),
             })
@@ -1717,16 +1933,15 @@ mod tests {
         room.on_latest_event_decrypted(event.clone(), 0, &mut changes);
 
         // The subscriber isn't notified at this point.
-        stream_assert::assert_pending!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
 
         // Then updating the room info will store the event,
-        client.apply_changes(&changes);
+        client.apply_changes(&changes, false);
         assert_eq!(room.latest_event().unwrap().event_id(), event.event_id());
 
         // And wake up the subscriber.
-        use futures_util::FutureExt as _;
-        assert!(room_info_subscriber.next().now_or_never().is_some());
-        stream_assert::assert_pending!(room_info_subscriber);
+        assert_ready!(room_info_subscriber);
+        assert_pending!(room_info_subscriber);
     }
 
     #[test]
@@ -1742,7 +1957,7 @@ mod tests {
         let event = make_latest_event("$A");
         let mut changes = StateChanges::default();
         room.on_latest_event_decrypted(event.clone(), 0, &mut changes);
-        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap(), false);
 
         // Then is it stored
         assert_eq!(room.latest_event().unwrap().event_id(), event.event_id());
@@ -1764,7 +1979,7 @@ mod tests {
         let new_event_index = 1;
         let mut changes = StateChanges::default();
         room.on_latest_event_decrypted(new_event.clone(), new_event_index, &mut changes);
-        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap(), false);
 
         // Then the encrypted events list is shortened to only newer events
         let enc_evs = room.latest_encrypted_events();
@@ -1791,7 +2006,7 @@ mod tests {
         let new_event_index = 3;
         let mut changes = StateChanges::default();
         room.on_latest_event_decrypted(new_event, new_event_index, &mut changes);
-        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap());
+        room.set_room_info(changes.room_infos.get(room.room_id()).cloned().unwrap(), false);
 
         // Then the encrypted events list ie empty
         let enc_evs = room.latest_encrypted_events();

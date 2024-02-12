@@ -30,12 +30,13 @@ use ruma::{
     OwnedDeviceKeyId, UInt, UserId,
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use tokio::sync::Mutex;
 use tracing::{instrument, trace, warn};
 use vodozemac::{olm::SessionConfig, Curve25519PublicKey, Ed25519PublicKey};
 
 use super::{atomic_bool_deserializer, atomic_bool_serializer};
-#[cfg(any(test, feature = "testing"))]
+#[cfg(any(test, feature = "testing", doc))]
 use crate::OlmMachine;
 use crate::{
     error::{EventError, OlmError, OlmResult, SignatureError},
@@ -440,6 +441,46 @@ impl Device {
 
         self.encrypt(event_type, content).await
     }
+
+    /// Encrypt an event for this device.
+    ///
+    /// Beware that the 1-to-1 session must be established prior to this
+    /// call by using the [`OlmMachine::get_missing_sessions`] method.
+    ///
+    /// Notable limitation: The caller is responsible for sending the encrypted
+    /// event to the target device, this encryption method supports out-of-order
+    /// messages to a certain extent (2000 messages), if multiple messages are
+    /// encrypted using this method they should be sent in the same order as
+    /// they are encrypted.
+    ///
+    /// *Note*: To instead encrypt an event meant for a room use the
+    /// [`OlmMachine::encrypt_room_event()`] method instead.
+    ///
+    /// # Arguments
+    /// * `event_type` - The type of the event to be sent.
+    /// * `content` - The content of the event to be sent. This should be a type
+    ///   that implements the `Serialize` trait.
+    ///
+    /// # Returns
+    ///
+    /// The encrypted raw content to be shared with your preferred transport
+    /// layer (usually to-device), [`OlmError::MissingSession`] if there is
+    /// no established session with the device.
+    pub async fn encrypt_event_raw(
+        &self,
+        event_type: &str,
+        content: &Value,
+    ) -> OlmResult<Raw<ToDeviceEncryptedEventContent>> {
+        let (used_session, raw_encrypted) = self.encrypt(event_type, content).await?;
+
+        // perist the used session
+        self.verification_machine
+            .store
+            .save_changes(Changes { sessions: vec![used_session], ..Default::default() })
+            .await?;
+
+        Ok(raw_encrypted)
+    }
 }
 
 /// A read only view over all devices belonging to a user.
@@ -500,8 +541,9 @@ impl UserDevices {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 /// The local trust state of a device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 pub enum LocalTrust {
     /// The device has been verified and is trusted.
     Verified = 0,
@@ -651,7 +693,7 @@ impl ReadOnlyDevice {
             }
         } else {
             warn!(
-                "Trying to find a Olm session of a device, but the device doesn't have a \
+                "Trying to find an Olm session of a device, but the device doesn't have a \
                 Curve25519 key",
             );
 

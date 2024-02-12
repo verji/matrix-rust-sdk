@@ -210,11 +210,8 @@ jobs:
           - name: '[m]-common'
             cmd: matrix-sdk-common
 
-          - name: '[m]-indexeddb, no crypto'
-            cmd: indexeddb-no-crypto
-
-          - name: '[m]-indexeddb, with crypto'
-            cmd: indexeddb-with-crypto
+          - name: '[m]-indexeddb'
+            cmd: indexeddb
 
           - name: '[m], no-default, wasm-flags'
             cmd: matrix-sdk-no-default
@@ -281,7 +278,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2023-11-08
+          toolchain: nightly-2024-02-06
           components: rustfmt
 
       - name: Cargo fmt
@@ -318,7 +315,7 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: nightly-2023-11-08
+          toolchain: nightly-2024-02-06
           components: clippy
 
       - name: Load cache

@@ -12,6 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-pub mod oidc;
+/// Old format of the `inbound_group_sessions` store which lacked indexes or
+/// a sensible structure
+pub const INBOUND_GROUP_SESSIONS_V1: &str = "inbound_group_sessions";
 
-// TODO(pixlwave) Move AuthenticationService from the FFI into here.
+/// `inbound_group_sessions2` with large values in each record due to double
+/// JSON-encoding and arrays of ints instead of base64.
+/// Also lacked the `backed_up_to` property+index.
+pub const INBOUND_GROUP_SESSIONS_V2: &str = "inbound_group_sessions2";

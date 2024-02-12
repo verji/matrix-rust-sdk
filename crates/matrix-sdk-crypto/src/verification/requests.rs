@@ -504,10 +504,7 @@ impl VerificationRequest {
         methods: Vec<VerificationMethod>,
     ) -> Option<OutgoingVerificationRequest> {
         let mut guard = self.inner.write();
-
-        let Some((updated, content)) = guard.accept(methods) else {
-            return None;
-        };
+        let (updated, content) = guard.accept(methods)?;
 
         ObservableWriteGuard::set(&mut guard, updated);
 
@@ -892,6 +889,7 @@ enum InnerRequest {
     Ready(RequestState<Ready>),
     Transitioned(RequestState<Transitioned>),
     Passive(RequestState<Passive>),
+    #[allow(dead_code)] // The `RequestState` field within `Done` is not currently used.
     Done(RequestState<Done>),
     Cancelled(RequestState<Cancelled>),
 }

@@ -31,7 +31,6 @@ use super::{
         EventMeta, FullEventMeta, TimelineInnerMetadata, TimelineInnerState,
         TimelineInnerStateTransaction,
     },
-    item::timeline_item,
     traits::RoomDataProvider,
     util::{rfind_event_by_id, RelativePosition},
     TimelineItem,
@@ -212,7 +211,7 @@ impl ReadReceipts {
     /// Unmark the given event as seen by the user.
     fn remove_event_receipt_for_user(&mut self, event_id: &EventId, user_id: &UserId) {
         if let Some(map) = self.by_event.get_mut(event_id) {
-            map.remove(user_id);
+            map.swap_remove(user_id);
             // Remove the entire map if this was the last entry.
             if map.is_empty() {
                 self.by_event.remove(event_id);
@@ -291,14 +290,14 @@ impl ReadReceiptTimelineUpdate {
         let mut event_item = event_item.clone();
 
         if let Some(remote_event_item) = event_item.as_remote_mut() {
-            if remote_event_item.read_receipts.remove(user_id).is_none() {
+            if remote_event_item.read_receipts.swap_remove(user_id).is_none() {
                 error!(
                     %event_id, %user_id,
                     "inconsistent state: old event item for user's read \
                      receipt doesn't have a receipt for the user"
                 );
             }
-            items.set(receipt_pos, timeline_item(event_item, event_item_id));
+            items.set(receipt_pos, TimelineItem::new(event_item, event_item_id));
         } else {
             warn!("received a read receipt for a local item, this should not be possible");
         }
@@ -327,7 +326,7 @@ impl ReadReceiptTimelineUpdate {
 
         if let Some(remote_event_item) = event_item.as_remote_mut() {
             remote_event_item.read_receipts.insert(user_id, receipt);
-            items.set(receipt_pos, timeline_item(event_item, event_item_id));
+            items.set(receipt_pos, TimelineItem::new(event_item, event_item_id));
         } else {
             warn!("received a read receipt for a local item, this should not be possible");
         }
@@ -487,7 +486,7 @@ impl TimelineInnerStateTransaction<'_> {
         }
 
         remote_prev_event_item.read_receipts = read_receipts;
-        self.items.set(prev_item_pos, timeline_item(prev_event_item, prev_event_item_id));
+        self.items.set(prev_item_pos, TimelineItem::new(prev_event_item, prev_event_item_id));
     }
 }
 
