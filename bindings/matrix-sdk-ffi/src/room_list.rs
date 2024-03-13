@@ -15,9 +15,10 @@ use matrix_sdk::{
 use matrix_sdk_ui::{
     room_list_service::{
         filters::{
-            new_filter_all, new_filter_any, new_filter_category, new_filter_fuzzy_match_room_name,
-            new_filter_non_left, new_filter_none, new_filter_normalized_match_room_name,
-            new_filter_unread, RoomCategory,
+            new_filter_all, new_filter_any, new_filter_category, new_filter_favourite,
+            new_filter_fuzzy_match_room_name, new_filter_invite, new_filter_non_left,
+            new_filter_none, new_filter_normalized_match_room_name, new_filter_unread,
+            RoomCategory,
         },
         BoxedFilterFn,
     },
@@ -52,6 +53,8 @@ pub enum RoomListError {
     TimelineNotInitialized { room_name: String },
     #[error("Timeline couldn't be initialized: {error}")]
     InitializingTimeline { error: String },
+    #[error("Event cache ran into an error: {error}")]
+    EventCache { error: String },
 }
 
 impl From<matrix_sdk_ui::room_list_service::Error> for RoomListError {
@@ -69,6 +72,7 @@ impl From<matrix_sdk_ui::room_list_service::Error> for RoomListError {
             InitializingTimeline(source) => {
                 Self::InitializingTimeline { error: source.to_string() }
             }
+            EventCache(error) => Self::EventCache { error: error.to_string() },
         }
     }
 }
@@ -417,6 +421,8 @@ pub enum RoomListEntriesDynamicFilterKind {
     Any { filters: Vec<RoomListEntriesDynamicFilterKind> },
     NonLeft,
     Unread,
+    Favourite,
+    Invite,
     Category { expect: RoomListFilterCategory },
     None,
     NormalizedMatchRoomName { pattern: String },
@@ -455,6 +461,8 @@ impl FilterWrapper {
             ))),
             Kind::NonLeft => Self(Box::new(new_filter_non_left(client))),
             Kind::Unread => Self(Box::new(new_filter_unread(client))),
+            Kind::Favourite => Self(Box::new(new_filter_favourite(client))),
+            Kind::Invite => Self(Box::new(new_filter_invite(client))),
             Kind::Category { expect } => Self(Box::new(new_filter_category(client, expect.into()))),
             Kind::None => Self(Box::new(new_filter_none())),
             Kind::NormalizedMatchRoomName { pattern } => {
@@ -529,7 +537,12 @@ impl RoomListItem {
         &self,
         event_type_filter: Option<Arc<TimelineEventTypeFilter>>,
     ) -> Result<(), RoomListError> {
-        let mut timeline_builder = self.inner.default_room_timeline_builder().await;
+        let mut timeline_builder = self
+            .inner
+            .default_room_timeline_builder()
+            .await
+            .map_err(|err| RoomListError::InitializingTimeline { error: err.to_string() })?;
+
         if let Some(event_type_filter) = event_type_filter {
             timeline_builder = timeline_builder.event_filter(move |event, room_version_id| {
                 // Always perform the default filter first

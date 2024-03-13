@@ -24,6 +24,7 @@ use futures_core::Stream;
 use imbl::Vector;
 use matrix_sdk::{
     attachment::AttachmentConfig,
+    event_cache::EventCacheDropHandles,
     event_handler::EventHandlerHandle,
     executor::JoinHandle,
     room::{Receipts, Room},
@@ -59,7 +60,6 @@ use tokio::sync::{mpsc::Sender, Mutex, Notify};
 use tracing::{debug, error, info, instrument, trace, warn};
 
 use self::futures::SendAttachment;
-use crate::event_graph::RoomEventGraph;
 
 mod builder;
 mod error;
@@ -598,6 +598,9 @@ impl Timeline {
             TimelineItemContent::Poll(poll_state) => AnyMessageLikeEventContent::UnstablePollStart(
                 UnstablePollStartEventContent::New(poll_state.into()),
             ),
+            TimelineItemContent::CallInvite => {
+                error_return!("Retrying call events is not currently supported");
+            }
         };
 
         debug!("Retrying failed local echo");
@@ -816,7 +819,7 @@ struct TimelineDropHandle {
     room_update_join_handle: JoinHandle<()>,
     ignore_user_list_update_join_handle: JoinHandle<()>,
     room_key_from_backups_join_handle: JoinHandle<()>,
-    _event_graph: RoomEventGraph,
+    _event_cache_drop_handle: Arc<EventCacheDropHandles>,
 }
 
 impl Drop for TimelineDropHandle {
