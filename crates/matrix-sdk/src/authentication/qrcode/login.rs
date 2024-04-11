@@ -196,50 +196,54 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             let check_code = channel.check_code().to_owned();
             self.state.set(LoginProgress::EstablishingSecureChannel { check_code });
 
-            let oidc_client = self.register_client().await?;
-
-            // TODO: Create a `vodozemac::Account` which we'll feed into a new `OlmMachine`
-            // constructor.
-            let secret_key = Curve25519SecretKey::new();
-            let public_key = Curve25519PublicKey::from(&secret_key);
-            let device_id = public_key;
-
-            let auth_grant_response = oidc_client.request_device_authorization(device_id).await?;
-
-            let message = QrAuthMessage::login_protocols((&auth_grant_response).into(), device_id);
-            channel.send_json(&message).await.unwrap();
-
-            let message = channel.receive_json().await.unwrap();
-            let QrAuthMessage::LoginProtocolAccepted() = message else { todo!() };
-
-            self.state.set(LoginProgress::WaitingForToken);
-
-            let session_tokens = oidc_client.wait_for_tokens(&auth_grant_response).await?;
-            self.client.oidc().set_session_tokens(session_tokens);
-            let whoami_response = self.client.whoami().await.map_err(crate::Error::from).unwrap();
-
-            self.client
-                .set_session_meta(SessionMeta {
-                    user_id: whoami_response.user_id,
-                    device_id: OwnedDeviceId::from(device_id.to_base64()),
-                })
-                .await
-                .unwrap();
-
-            // Tell the existing device that we're logged in.
-            let message = QrAuthMessage::LoginSuccess();
-            channel.send_json(&message).await.unwrap();
-
-            let message = channel.receive_json().await.unwrap();
-            let QrAuthMessage::LoginSecrets(bundle) = message else {
-                todo!();
-            };
-
-            // Upload the device keys and stuff.
-            self.client.encryption().import_secrets_bundle(&bundle).await.unwrap();
-            self.client.encryption().run_initialization_tasks(None).await.unwrap();
-
-            self.state.set(LoginProgress::Done);
+            // TODO: This is not `Send` and uniffi wants it to be.
+            // let oidc_client = self.register_client().await?;
+            //
+            // // TODO: Create a `vodozemac::Account` which we'll feed into a new
+            // `OlmMachine` // constructor.
+            // let secret_key = Curve25519SecretKey::new();
+            // let public_key = Curve25519PublicKey::from(&secret_key);
+            // let device_id = public_key;
+            //
+            // let auth_grant_response =
+            // oidc_client.request_device_authorization(device_id).await?;
+            //
+            // let message = QrAuthMessage::login_protocols((&auth_grant_response).into(),
+            // device_id); channel.send_json(&message).await.unwrap();
+            //
+            // let message = channel.receive_json().await.unwrap();
+            // let QrAuthMessage::LoginProtocolAccepted() = message else { todo!() };
+            //
+            // self.state.set(LoginProgress::WaitingForToken);
+            //
+            // let session_tokens =
+            // oidc_client.wait_for_tokens(&auth_grant_response).await?;
+            // self.client.oidc().set_session_tokens(session_tokens);
+            // let whoami_response =
+            // self.client.whoami().await.map_err(crate::Error::from).unwrap();
+            //
+            // self.client
+            //     .set_session_meta(SessionMeta {
+            //         user_id: whoami_response.user_id,
+            //         device_id: OwnedDeviceId::from(device_id.to_base64()),
+            //     })
+            //     .await
+            //     .unwrap();
+            //
+            // // Tell the existing device that we're logged in.
+            // let message = QrAuthMessage::LoginSuccess();
+            // channel.send_json(&message).await.unwrap();
+            //
+            // let message = channel.receive_json().await.unwrap();
+            // let QrAuthMessage::LoginSecrets(bundle) = message else {
+            //     todo!();
+            // };
+            //
+            // // Upload the device keys and stuff.
+            // self.client.encryption().import_secrets_bundle(&bundle).await.unwrap();
+            // self.client.encryption().run_initialization_tasks(None).await.unwrap();
+            //
+            // self.state.set(LoginProgress::Done);
 
             Ok(())
         })

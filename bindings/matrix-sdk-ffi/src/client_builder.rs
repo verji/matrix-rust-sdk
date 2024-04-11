@@ -276,6 +276,8 @@ impl ClientBuilder {
             let client = builder.build()?;
             let client_metadata = oidc_configuration.try_into().unwrap();
 
+            // TODO: what about storage?
+
             let oidc = client.inner.oidc();
             let login = oidc.login_with_qr_code(&qr_code_data.inner, client_metadata);
 
@@ -288,7 +290,7 @@ impl ClientBuilder {
             }));
 
             // TODO: This is not `Send` and uniffi wants it to be.
-            // login.await.unwrap();
+            login.await.unwrap();
 
             Ok(client)
         } else {
