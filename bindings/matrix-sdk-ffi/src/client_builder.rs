@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
-    crypto::qr_login::{QrCodeDecodeError as CryptoQrCodeDecodeError, QrCodeModeData},
+    crypto::qr_login::{CryptoQrCodeDecodeError, QrCodeModeData},
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     reqwest::Certificate,
     ruma::{
@@ -49,7 +49,7 @@ impl QrCodeData {
 #[uniffi(flat_error)]
 enum QrCodeDecodeError {
     #[error("Error decoding QR code: {0:?}")]
-    Crypto(#[from] CryptoQrCodeDecodeError)
+    Crypto(#[from] CryptoQrCodeDecodeError),
 }
 
 /// Enum describing the progress of the QR-code login.
