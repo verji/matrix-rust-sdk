@@ -141,7 +141,7 @@ pub struct ClientBuilder {
     additional_root_certificates: Vec<Vec<u8>>,
 }
 
-#[uniffi::export]
+#[uniffi::export(async_runtime = "tokio")]
 impl ClientBuilder {
     #[uniffi::constructor]
     pub fn new() -> Arc<Self> {
@@ -266,8 +266,8 @@ impl ClientBuilder {
         Arc::new(builder)
     }
 
-    pub fn build(self: Arc<Self>) -> Result<Arc<Client>, ClientBuildError> {
-        Ok(Arc::new(self.build_inner()?))
+    pub async fn build(self: Arc<Self>) -> Result<Arc<Client>, ClientBuildError> {
+        Ok(Arc::new(self.build_inner().await?))
     }
 
     /// Finish the building of the client and attempt to log in using the
@@ -280,7 +280,7 @@ impl ClientBuilder {
     ) -> Result<Arc<Client>, ClientBuildError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode {
             let builder = self.homeserver_url(homeserver_url.to_string());
-            let client = builder.build()?;
+            let client = builder.build().await?;
             let client_metadata = oidc_configuration.try_into().unwrap();
 
             // TODO: what about storage?
@@ -336,7 +336,7 @@ impl ClientBuilder {
         Arc::new(builder)
     }
 
-    pub(crate) fn build_inner(self: Arc<Self>) -> Result<Client, ClientBuildError> {
+    pub(crate) async fn build_inner(self: Arc<Self>) -> Result<Client, ClientBuildError> {
         let builder = unwrap_or_clone_arc(self);
         let mut inner_builder = builder.inner;
 
@@ -414,7 +414,7 @@ impl ClientBuilder {
             );
         }
 
-        let sdk_client = RUNTIME.block_on(async move { inner_builder.build().await })?;
+        let sdk_client = inner_builder.build().await?;
 
         // At this point, `sdk_client` might contain a `sliding_sync_proxy` that has
         // been configured by the homeserver (if it's a `ServerName` and the
