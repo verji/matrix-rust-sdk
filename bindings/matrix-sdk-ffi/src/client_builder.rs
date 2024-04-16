@@ -273,7 +273,7 @@ impl ClientBuilder {
     ) -> Result<Arc<Client>, ClientBuildError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode {
             let builder = self.homeserver_url(homeserver_url.to_string());
-            let client = builder.build()?;
+            let client = builder.build().await?;
             let client_metadata = oidc_configuration.try_into().unwrap();
 
             let oidc = client.inner.oidc();
@@ -287,8 +287,7 @@ impl ClientBuilder {
                 }
             }));
 
-            // TODO: This is not `Send` and uniffi wants it to be.
-            // login.await.unwrap();
+            login.await.unwrap();
 
             Ok(client)
         } else {
