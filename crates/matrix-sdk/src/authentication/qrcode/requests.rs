@@ -13,38 +13,42 @@
 // limitations under the License.
 
 pub mod create_rendezvous {
-    use http::header::{CONTENT_TYPE, ETAG, EXPIRES, LAST_MODIFIED, LOCATION};
+    use http::header::{CONTENT_TYPE, ETAG, EXPIRES, LAST_MODIFIED};
     use ruma::{
         api::{request, response, Metadata},
         metadata,
     };
+    use url::Url;
 
     pub const METADATA: Metadata = metadata! {
         method: POST,
         rate_limited: true,
         authentication: None,
         history: {
-            // TODO: Once we have a working rendezvous server, switch to the correct MSC.
-            // unstable => "/_matrix/client/unstable/org.matrix.msc4108/rendezvous",
-            unstable => "/_matrix/client/unstable/org.matrix.msc3886/rendezvous",
+            unstable => "/_matrix/client/unstable/org.matrix.msc4108/rendezvous",
         }
     };
 
     #[request]
-    #[derive(Default)]
-    pub struct Request {}
+    pub struct Request {
+        #[ruma_api(header = CONTENT_TYPE)]
+        pub content_type: String,
+    }
+
+    impl Request {
+        pub fn new() -> Self {
+            Self { content_type: "application/json".to_owned() }
+        }
+    }
 
     #[response]
     pub struct Response {
-        #[ruma_api(header = LOCATION)]
-        pub location: String,
+        pub url: Url,
         #[ruma_api(header = ETAG)]
         pub etag: String,
         #[ruma_api(header = EXPIRES)]
         pub expires: String,
         #[ruma_api(header = LAST_MODIFIED)]
         pub last_modified: String,
-        #[ruma_api(header = CONTENT_TYPE)]
-        pub content_type: Option<String>,
     }
 }

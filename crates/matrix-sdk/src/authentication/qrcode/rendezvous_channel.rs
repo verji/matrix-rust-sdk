@@ -54,16 +54,12 @@ impl RendezvousChannel {
         client: HttpClient,
         rendezvous_server: &Url,
     ) -> Result<Self, HttpError> {
-        let request = self::requests::create_rendezvous::Request::default();
+        let request = self::requests::create_rendezvous::Request::new();
         let response = client
             .send(request, None, rendezvous_server.to_string(), None, &[], Default::default())
             .await?;
 
-        // TODO: FIX THE DISCOVERY HERE.
-        let rendezvous_url = Url::parse("https://rendezvous.lab.element.dev")
-            .unwrap()
-            .join(&response.location)
-            .unwrap();
+        let rendezvous_url = response.url;
         let etag = response.etag;
 
         Ok(Self { client, rendezvous_url, etag })
