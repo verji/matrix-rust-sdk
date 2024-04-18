@@ -207,7 +207,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             channel.send_json(&message).await.unwrap();
 
             let message = channel.receive_json().await.unwrap();
-            let QrAuthMessage::LoginProtocolAccepted() = message else { todo!() };
+            let QrAuthMessage::LoginProtocolAccepted {} = message else { todo!() };
 
             self.state.set(LoginProgress::WaitingForToken);
 
@@ -224,7 +224,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
                 .unwrap();
 
             // Tell the existing device that we're logged in.
-            let message = QrAuthMessage::LoginSuccess();
+            let message = QrAuthMessage::LoginSuccess {};
             channel.send_json(&message).await.unwrap();
 
             let message = channel.receive_json().await.unwrap();
