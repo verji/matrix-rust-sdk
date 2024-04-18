@@ -294,8 +294,8 @@ impl<'a> LoginWithQrCode<'a> {
         // TODO: How do we use our own reqwest client here...
         // let http_client = self.client.inner.http_client.inner.clone();
         let http_client = openidconnect::reqwest::Client::builder()
-            .proxy(Proxy::all("http://localhost:8011").unwrap())
-            .danger_accept_invalid_certs(true)
+            // .proxy(Proxy::all("http://localhost:8011").unwrap())
+            // .danger_accept_invalid_certs(true)
             .build()
             .unwrap();
 
