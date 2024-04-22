@@ -152,6 +152,9 @@ pub struct EstablishedSecureChannel {
 impl EstablishedSecureChannel {
     pub async fn send_json(&mut self, message: impl Serialize) -> Result<(), Error> {
         let message = serde_json::to_string(&message)?;
+
+        debug!(message, "Sending message over the secure channel.");
+
         self.send(&message).await
     }
 
@@ -198,6 +201,7 @@ impl EstablishedSecureChannel {
 
     pub async fn receive_json<D: DeserializeOwned>(&mut self) -> Result<D, Error> {
         let message = self.receive().await?;
+        debug!(message, "Received message over the secure channel.");
         Ok(serde_json::from_str(&message)?)
     }
 
