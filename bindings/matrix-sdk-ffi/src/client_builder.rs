@@ -66,7 +66,7 @@ pub enum QrLoginProgress {
     },
     /// We are waiting for the login and for the OIDC provider to give us an
     /// access token.
-    WaitingForToken,
+    WaitingForToken { user_code: String },
     /// The login has successfully finished.
     Done,
 }
@@ -84,7 +84,7 @@ impl From<matrix_sdk::authentication::qrcode::LoginProgress> for QrLoginProgress
             LoginProgress::EstablishingSecureChannel { check_code } => {
                 Self::EstablishingSecureChannel { check_code: check_code.to_digit() }
             }
-            LoginProgress::WaitingForToken => Self::WaitingForToken,
+            LoginProgress::WaitingForToken { user_code } => Self::WaitingForToken { user_code },
             LoginProgress::Done => Self::Done,
         }
     }

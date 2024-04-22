@@ -161,7 +161,9 @@ pub enum LoginProgress {
     EstablishingSecureChannel {
         check_code: CheckCode,
     },
-    WaitingForToken,
+    WaitingForToken {
+        user_code: String,
+    },
     Done,
 }
 
@@ -209,7 +211,10 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             let message = channel.receive_json().await.unwrap();
             let QrAuthMessage::LoginProtocolAccepted {} = message else { todo!() };
 
-            self.state.set(LoginProgress::WaitingForToken);
+            let user_code = auth_grant_response.user_code();
+
+            self.state
+                .set(LoginProgress::WaitingForToken { user_code: user_code.secret().to_owned() });
 
             let session_tokens = oidc_client.wait_for_tokens(&auth_grant_response).await?;
             self.client.oidc().set_session_tokens(session_tokens);
