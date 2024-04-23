@@ -63,6 +63,10 @@ pub enum QrLoginProgress {
         /// The check code that the device should display so the other device
         /// can confirm that the channel is secure as well.
         check_code: u8,
+        /// The string representation of the check code, will be guaranteed to
+        /// be 2 characters long, preserving the leading zero if the
+        /// first digit is a zero.
+        check_code_string: String,
     },
     /// We are waiting for the login and for the OIDC provider to give us an
     /// access token.
@@ -82,7 +86,12 @@ impl From<matrix_sdk::authentication::qrcode::LoginProgress> for QrLoginProgress
         match value {
             LoginProgress::Starting => Self::Starting,
             LoginProgress::EstablishingSecureChannel { check_code } => {
-                Self::EstablishingSecureChannel { check_code: check_code.to_digit() }
+                let check_code = check_code.to_digit();
+
+                Self::EstablishingSecureChannel {
+                    check_code,
+                    check_code_string: format!("{check_code:02}"),
+                }
             }
             LoginProgress::WaitingForToken { user_code } => Self::WaitingForToken { user_code },
             LoginProgress::Done => Self::Done,

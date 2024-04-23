@@ -132,8 +132,8 @@ async fn login_and_scan(proxy: Option<Url>) -> Result<()> {
                     let code = check_code.to_digit();
                     println!("Please enter the following code into the other device {code:02}");
                 }
-                LoginProgress::WaitingForToken => {
-                    println!("Please use your other device to confirm the log in")
+                LoginProgress::WaitingForToken { user_code } => {
+                    println!("Please use your other device to confirm the log in {user_code}")
                 }
                 LoginProgress::Done => break,
             }
