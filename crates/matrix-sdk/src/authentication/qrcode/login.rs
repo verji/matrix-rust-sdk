@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::future::IntoFuture;
+use std::{future::IntoFuture, pin::Pin, str::FromStr};
 
 use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use eyeball::SharedObservable;
-use futures_core::Stream;
+use futures_core::{Future, Stream};
+use http::Method;
 use mas_oidc_client::types::{
     client_credentials::ClientCredentials,
     registration::VerifiedClientMetadata,
@@ -36,18 +37,19 @@ use openidconnect::{
         CoreRevocationErrorResponse, CoreSubjectIdentifierType, CoreTokenIntrospectionResponse,
         CoreTokenResponse,
     },
-    reqwest::Proxy,
     AdditionalProviderMetadata, AuthType, ClientId, ClientSecret, DeviceAuthorizationUrl,
     EmptyAdditionalClaims, EndpointMaybeSet, EndpointNotSet, EndpointSet, IssuerUrl,
     OAuth2TokenResponse, ProviderMetadata, Scope, StandardErrorResponse,
 };
 use ruma::{api::client::discovery::discover_homeserver::AuthenticationServerInfo, OwnedDeviceId};
+use url::Url;
 use vodozemac::{secure_channel::CheckCode, Curve25519PublicKey, Curve25519SecretKey};
 
 use crate::{
     authentication::qrcode::{
         messages::QrAuthMessage, secure_channel::EstablishedSecureChannel, Error,
     },
+    http_client::HttpClient,
     oidc::OidcSessionTokens,
     Client,
 };
@@ -104,7 +106,7 @@ pub type OidcClientInner<
 
 pub struct OidcClient {
     inner: OidcClientInner,
-    http_client: openidconnect::reqwest::Client,
+    http_client: HttpClient,
 }
 
 impl OidcClient {
@@ -251,6 +253,40 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
     }
 }
 
+impl<'c> openidconnect::AsyncHttpClient<'c> for HttpClient {
+    type Error = Error;
+
+    type Future = Pin<
+        Box<
+            dyn Future<Output = Result<openidconnect::HttpResponse, Self::Error>>
+                + Send
+                + Sync
+                + 'c,
+        >,
+    >;
+
+    fn call(&'c self, request: openidconnect::HttpRequest) -> Self::Future {
+        Box::pin(async move {
+            let url = Url::parse(&request.uri().to_string()).unwrap();
+            let method = Method::from_str(request.method().as_str()).unwrap();
+
+            let response = self.inner.request(method, url).send().await.unwrap();
+
+            let mut builder =
+                openidconnect::http::Response::builder().status(response.status().as_u16());
+
+            for (name, value) in response.headers().iter() {
+                builder = builder.header(name.as_str(), value.as_bytes());
+            }
+
+            let body = response.bytes().await.unwrap().to_vec();
+            let response = builder.body(body).unwrap();
+
+            Ok(response)
+        })
+    }
+}
+
 impl<'a> LoginWithQrCode<'a> {
     pub(crate) fn new(
         client: &'a Client,
@@ -299,14 +335,7 @@ impl<'a> LoginWithQrCode<'a> {
             ClientCredentials::None { client_id: client_id.as_str().to_owned() },
         );
 
-        // TODO: How do we use our own reqwest client here...
-        // let http_client = self.client.inner.http_client.inner.clone();
-        let http_client = openidconnect::reqwest::Client::builder()
-            // .proxy(Proxy::all("http://localhost:8011").unwrap())
-            // .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
-
+        let http_client = self.client.inner.http_client.clone();
         let provider_metadata =
             DeviceProviderMetadata::discover_async(issuer_url, &http_client).await.unwrap();
 
