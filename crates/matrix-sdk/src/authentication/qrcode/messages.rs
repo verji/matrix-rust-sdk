@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use matrix_sdk_base::crypto::types::SecretsBundle;
 use openidconnect::{
     core::CoreDeviceAuthorizationResponse, EndUserVerificationUrl, VerificationUriComplete,
@@ -83,14 +84,16 @@ where
     D: Deserializer<'de>,
 {
     let key: String = Deserialize::deserialize(de)?;
-    Curve25519PublicKey::from_base64(&key).map_err(serde::de::Error::custom)
+    let key = URL_SAFE_NO_PAD.decode(key).map_err(serde::de::Error::custom)?;
+
+    Curve25519PublicKey::from_slice(&key).map_err(serde::de::Error::custom)
 }
 
 pub(crate) fn serialize_curve_key<S>(key: &Curve25519PublicKey, s: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
 {
-    let key = key.to_base64();
+    let key = URL_SAFE_NO_PAD.encode(key.as_bytes());
     s.serialize_str(&key)
 }
 

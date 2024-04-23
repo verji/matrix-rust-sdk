@@ -14,6 +14,7 @@
 
 use std::future::IntoFuture;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use eyeball::SharedObservable;
 use futures_core::Stream;
 use mas_oidc_client::types::{
@@ -111,10 +112,12 @@ impl OidcClient {
         &self,
         device_id: Curve25519PublicKey,
     ) -> Result<CoreDeviceAuthorizationResponse, Error> {
+        let device_id = URL_SAFE_NO_PAD.encode(device_id.as_bytes());
+
         let scopes = [
             ScopeToken::Openid,
             ScopeToken::MatrixApi(MatrixApiScopeToken::Full),
-            ScopeToken::try_with_matrix_device(device_id.to_base64()).unwrap(),
+            ScopeToken::try_with_matrix_device(device_id).unwrap(),
         ]
         .into_iter()
         .map(|scope| Scope::new(scope.to_string()));
