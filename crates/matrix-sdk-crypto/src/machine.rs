@@ -699,7 +699,19 @@ impl OlmMachine {
     ///
     /// [`receive_keys_upload_response`]: #method.receive_keys_upload_response
     async fn keys_for_upload(&self, account: &Account) -> Option<UploadKeysRequest> {
-        let (device_keys, one_time_keys, fallback_keys) = account.keys_for_upload();
+        let (mut device_keys, one_time_keys, fallback_keys) = account.keys_for_upload();
+
+        if let Some(device_keys) = &mut device_keys {
+            let private_identity = self.store().private_identity();
+            let guard = private_identity.lock().await;
+
+            if guard.status().await.is_complete() {
+                guard.sign_device_keys(device_keys).await.expect(
+                    "We should be able to sign our device keys since we confirmed that we \
+                     have a complete set of private cross-signing keys",
+                );
+            }
+        }
 
         if device_keys.is_none() && one_time_keys.is_empty() && fallback_keys.is_empty() {
             None
