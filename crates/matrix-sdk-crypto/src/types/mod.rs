@@ -56,11 +56,21 @@ pub struct SecretsBundle {
     pub backup: Option<BackupSecrets>,
 }
 
-#[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]
+#[derive(Deserialize, Clone, Serialize, ZeroizeOnDrop)]
 pub struct CrossSigningSecrets {
     pub master_key: String,
     pub user_signing_key: String,
     pub self_signing_key: String,
+}
+
+impl std::fmt::Debug for CrossSigningSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrossSigningSecrets")
+            .field("master_key", &"...")
+            .field("user_signing_key", &"...")
+            .field("self_signing_key", &"...")
+            .finish()
+    }
 }
 
 #[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]

@@ -51,7 +51,7 @@ use crate::{
     },
     http_client::HttpClient,
     oidc::OidcSessionTokens,
-    Client,
+    Client, HttpError,
 };
 
 // Obtain the device_authorization_url from the OIDC metadata provider.
@@ -119,7 +119,10 @@ impl OidcClient {
         let scopes = [
             ScopeToken::Openid,
             ScopeToken::MatrixApi(MatrixApiScopeToken::Full),
-            ScopeToken::try_with_matrix_device(device_id).unwrap(),
+            ScopeToken::try_with_matrix_device(device_id).expect(
+                "We should be able to create a scope token from a \
+                 Curve25519 public key encoded as base64",
+            ),
         ]
         .into_iter()
         .map(|scope| Scope::new(scope.to_string()));
@@ -211,10 +214,15 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             let auth_grant_response = oidc_client.request_device_authorization(device_id).await?;
 
             let message = QrAuthMessage::login_protocols((&auth_grant_response).into(), device_id);
-            channel.send_json(&message).await.unwrap();
+            channel.send_json(&message).await?;
 
-            let message = channel.receive_json().await.unwrap();
-            let QrAuthMessage::LoginProtocolAccepted {} = message else { todo!() };
+            let message = channel.receive_json().await?;
+            let QrAuthMessage::LoginProtocolAccepted {} = message else {
+                return Err(Error::UnexpectedMessage {
+                    expected: "m.login.protocol_accepted",
+                    received: message,
+                });
+            };
 
             let user_code = auth_grant_response.user_code();
 
@@ -223,7 +231,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             let session_tokens = oidc_client.wait_for_tokens(&auth_grant_response).await?;
             self.client.oidc().set_session_tokens(session_tokens);
-            let whoami_response = self.client.whoami().await.map_err(crate::Error::from).unwrap();
+            let whoami_response = self.client.whoami().await?;
 
             self.client
                 .set_session_meta(SessionMeta {
@@ -235,15 +243,18 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             // Tell the existing device that we're logged in.
             let message = QrAuthMessage::LoginSuccess {};
-            channel.send_json(&message).await.unwrap();
+            channel.send_json(&message).await?;
 
-            let message = channel.receive_json().await.unwrap();
+            let message = channel.receive_json().await?;
             let QrAuthMessage::LoginSecrets(bundle) = message else {
-                todo!();
+                return Err(Error::UnexpectedMessage {
+                    expected: "m.login.secrets",
+                    received: message,
+                });
             };
 
             // Upload the device keys and stuff.
-            self.client.encryption().import_secrets_bundle(&bundle).await.unwrap();
+            self.client.encryption().import_secrets_bundle(&bundle).await?;
             self.client.encryption().run_initialization_tasks(None).await.unwrap();
 
             self.state.set(LoginProgress::Done);
@@ -304,8 +315,7 @@ impl<'a> LoginWithQrCode<'a> {
             &self.qr_code_data,
             QrCodeMode::Login,
         )
-        .await
-        .unwrap();
+        .await?;
 
         Ok(channel)
     }
@@ -325,7 +335,7 @@ impl<'a> LoginWithQrCode<'a> {
 
         let client_secret = registration_response.client_secret.map(ClientSecret::new);
         let client_id = ClientId::new(registration_response.client_id);
-        let issuer_url = IssuerUrl::new(issuer_info.issuer.clone()).unwrap();
+        let issuer_url = IssuerUrl::new(issuer_info.issuer.clone())?;
 
         // Let's put the relevant data we got from the `register_client()` request into
         // the `Client`, why isn't `register_client()` doing this automagically?

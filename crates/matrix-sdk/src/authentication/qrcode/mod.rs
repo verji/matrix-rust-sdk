@@ -14,6 +14,7 @@
 
 #![allow(missing_docs)]
 
+use matrix_sdk_base::crypto::SecretImportError;
 use thiserror::Error;
 use vodozemac::secure_channel::SecureChannelError as EciesError;
 
@@ -30,6 +31,8 @@ pub use grant_login::ExistingAuthGrantDings;
 pub use login::{LoginProgress, LoginWithQrCode};
 pub use matrix_sdk_base::crypto::qr_login::QrCodeData;
 
+use self::messages::QrAuthMessage;
+
 #[derive(Debug, Error)]
 pub enum Error {
     #[error(transparent)]
@@ -40,4 +43,8 @@ pub enum Error {
     Ecies(#[from] EciesError),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
+    #[error(transparent)]
+    SecretImport(#[from] SecretImportError),
+    #[error("We have received an unexpected message, expected: {expected}, got {received:?}.")]
+    UnexpectedMessage { expected: &'static str, received: QrAuthMessage },
 }

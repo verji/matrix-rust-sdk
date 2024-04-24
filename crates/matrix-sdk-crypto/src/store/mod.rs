@@ -742,7 +742,7 @@ impl BackupDecryptionKey {
 #[cfg(not(tarpaulin_include))]
 impl Debug for BackupDecryptionKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BackupDecryptionKey").finish()
+        f.debug_tuple("BackupDecryptionKey").field(&"...").finish()
     }
 }
 
