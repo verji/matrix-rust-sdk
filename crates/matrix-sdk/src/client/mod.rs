@@ -990,8 +990,12 @@ impl Client {
         }
     }
 
-    pub(crate) async fn set_session_meta(&self, session_meta: SessionMeta) -> Result<()> {
-        self.base_client().set_session_meta(session_meta).await?;
+    pub(crate) async fn set_session_meta(
+        &self,
+        session_meta: SessionMeta,
+        custom_account: Option<vodozemac::olm::Account>,
+    ) -> Result<()> {
+        self.base_client().set_session_meta(session_meta, custom_account).await?;
         Ok(())
     }
 
@@ -2082,7 +2086,7 @@ impl Client {
         // overwrite the session information shared with the parent too, and it
         // must be initialized at most once.
         if let Some(session) = self.session() {
-            client.set_session_meta(session.into_meta()).await?;
+            client.set_session_meta(session.into_meta(), None).await?;
         }
 
         Ok(client)

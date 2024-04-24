@@ -156,7 +156,7 @@ impl OlmMachine {
     ///
     /// * `device_id` - The unique id of the device that owns this machine.
     pub async fn new(user_id: &UserId, device_id: &DeviceId) -> Self {
-        OlmMachine::with_store(user_id, device_id, MemoryStore::new())
+        OlmMachine::with_store(user_id, device_id, MemoryStore::new(), None)
             .await
             .expect("Reading and writing to the memory store always succeeds")
     }
@@ -246,17 +246,21 @@ impl OlmMachine {
     /// the encryption keys.
     ///
     /// [`CryptoStore`]: crate::store::CryptoStore
-    #[instrument(skip(store), fields(ed25519_key, curve25519_key))]
+    #[instrument(skip(store, custom_account), fields(ed25519_key, curve25519_key))]
     pub async fn with_store(
         user_id: &UserId,
         device_id: &DeviceId,
         store: impl IntoCryptoStore,
+        custom_account: Option<vodozemac::olm::Account>,
     ) -> StoreResult<Self> {
         let store = store.into_crypto_store();
 
         let static_account = match store.load_account().await? {
             Some(account) => {
-                if user_id != account.user_id() || device_id != account.device_id() {
+                if user_id != account.user_id()
+                    || device_id != account.device_id()
+                    || custom_account.is_some()
+                {
                     return Err(CryptoStoreError::MismatchedAccount {
                         expected: (account.user_id().to_owned(), account.device_id().to_owned()),
                         got: (user_id.to_owned(), device_id.to_owned()),
@@ -272,7 +276,12 @@ impl OlmMachine {
             }
 
             None => {
-                let account = Account::with_device_id(user_id, device_id);
+                let account = if let Some(account) = custom_account {
+                    Account::new_helper(account, user_id, device_id)
+                } else {
+                    Account::with_device_id(user_id, device_id)
+                };
+
                 let static_account = account.static_data().clone();
 
                 Span::current()

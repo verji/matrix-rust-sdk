@@ -202,12 +202,16 @@ impl BaseClient {
     ///   a previous login call.
     ///
     /// This method panics if it is called twice.
-    pub async fn set_session_meta(&self, session_meta: SessionMeta) -> Result<()> {
+    pub async fn set_session_meta(
+        &self,
+        session_meta: SessionMeta,
+        custom_account: Option<crate::crypto::vodozemac::olm::Account>,
+    ) -> Result<()> {
         debug!(user_id = ?session_meta.user_id, device_id = ?session_meta.device_id, "Restoring login");
         self.store.set_session_meta(session_meta.clone(), &self.roominfo_update_sender).await?;
 
         #[cfg(feature = "e2e-encryption")]
-        self.regenerate_olm().await?;
+        self.regenerate_olm(custom_account).await?;
 
         Ok(())
     }
@@ -216,7 +220,10 @@ impl BaseClient {
     ///
     /// In particular, this will clear all its caches.
     #[cfg(feature = "e2e-encryption")]
-    pub async fn regenerate_olm(&self) -> Result<()> {
+    pub async fn regenerate_olm(
+        &self,
+        custom_account: Option<crate::crypto::vodozemac::olm::Account>,
+    ) -> Result<()> {
         tracing::debug!("regenerating OlmMachine");
         let session_meta = self.session_meta().ok_or(Error::OlmError(OlmError::MissingSession))?;
 
@@ -225,6 +232,7 @@ impl BaseClient {
             &session_meta.user_id,
             &session_meta.device_id,
             self.crypto_store.clone(),
+            custom_account,
         )
         .await
         .map_err(OlmError::from)?;
@@ -1702,10 +1710,10 @@ mod tests {
 
         let client = BaseClient::new();
         client
-            .set_session_meta(SessionMeta {
-                user_id: user_id.to_owned(),
-                device_id: "FOOBAR".into(),
-            })
+            .set_session_meta(
+                SessionMeta { user_id: user_id.to_owned(), device_id: "FOOBAR".into() },
+                None,
+            )
             .await
             .unwrap();
 
@@ -1762,10 +1770,10 @@ mod tests {
 
         let client = BaseClient::new();
         client
-            .set_session_meta(SessionMeta {
-                user_id: user_id.to_owned(),
-                device_id: "FOOBAR".into(),
-            })
+            .set_session_meta(
+                SessionMeta { user_id: user_id.to_owned(), device_id: "FOOBAR".into() },
+                None,
+            )
             .await
             .unwrap();
 
@@ -1821,10 +1829,10 @@ mod tests {
 
         let client = BaseClient::new();
         client
-            .set_session_meta(SessionMeta {
-                user_id: user_id.to_owned(),
-                device_id: "FOOBAR".into(),
-            })
+            .set_session_meta(
+                SessionMeta { user_id: user_id.to_owned(), device_id: "FOOBAR".into() },
+                None,
+            )
             .await
             .unwrap();
 
