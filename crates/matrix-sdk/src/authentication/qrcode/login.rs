@@ -106,7 +106,7 @@ pub type OidcClientInner<
 
 pub struct OidcClient {
     inner: OidcClientInner,
-    http_client: HttpClient,
+    http_client: openidconnect::reqwest::Client,
 }
 
 impl OidcClient {
@@ -335,7 +335,12 @@ impl<'a> LoginWithQrCode<'a> {
             ClientCredentials::None { client_id: client_id.as_str().to_owned() },
         );
 
-        let http_client = self.client.inner.http_client.clone();
+        // let http_client = self.client.inner.http_client.clone();
+        let http_client = openidconnect::reqwest::Client::builder()
+            // .proxy(Proxy::all("http://localhost:8011").unwrap())
+            // .danger_accept_invalid_certs(true)
+            .build()
+            .unwrap();
         let provider_metadata =
             DeviceProviderMetadata::discover_async(issuer_url, &http_client).await.unwrap();
 
