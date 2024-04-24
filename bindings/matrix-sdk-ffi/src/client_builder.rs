@@ -288,7 +288,7 @@ impl ClientBuilder {
         progress_listener: Box<dyn QrLoginProgressListener>,
     ) -> Result<Arc<Client>, ClientBuildError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode {
-            let builder = self.homeserver_url(homeserver_url.to_string());
+            let builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
             let client = builder.build().await?;
             let client_metadata = oidc_configuration.try_into().unwrap();
 
