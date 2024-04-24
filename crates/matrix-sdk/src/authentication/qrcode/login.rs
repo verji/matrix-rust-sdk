@@ -14,7 +14,6 @@
 
 use std::{future::IntoFuture, pin::Pin, str::FromStr};
 
-use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use eyeball::SharedObservable;
 use futures_core::{Future, Stream};
 use http::Method;
@@ -114,12 +113,10 @@ impl OidcClient {
         &self,
         device_id: Curve25519PublicKey,
     ) -> Result<CoreDeviceAuthorizationResponse, Error> {
-        let device_id = URL_SAFE_NO_PAD.encode(device_id.as_bytes());
-
         let scopes = [
             ScopeToken::Openid,
             ScopeToken::MatrixApi(MatrixApiScopeToken::Full),
-            ScopeToken::try_with_matrix_device(device_id).expect(
+            ScopeToken::try_with_matrix_device(device_id.to_base64()).expect(
                 "We should be able to create a scope token from a \
                  Curve25519 public key encoded as base64",
             ),
