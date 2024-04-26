@@ -260,6 +260,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             self.client.encryption().import_secrets_bundle(&bundle).await?;
             self.client.encryption().ensure_device_keys_upload().await.unwrap();
             self.client.encryption().run_initialization_tasks(None).await.unwrap();
+            self.client.encryption().wait_for_e2ee_initialization_tasks().await;
 
             self.state.set(LoginProgress::Done);
 
