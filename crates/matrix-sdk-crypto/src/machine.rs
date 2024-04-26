@@ -630,6 +630,22 @@ impl OlmMachine {
         })
     }
 
+    pub async fn upload_device_keys(
+        &self,
+    ) -> StoreResult<Option<(OwnedTransactionId, UploadKeysRequest)>> {
+        // If there are any *device* keys to upload (i.e. the account isn't shared),
+        // upload them before we upload the signatures, since the signatures may
+        // reference keys to be uploaded.
+        let cache = self.store().cache().await?;
+        let account = cache.account().await?;
+
+        Ok(if let Some(request) = self.keys_for_upload(&account).await {
+            Some((TransactionId::new(), request))
+        } else {
+            None
+        })
+    }
+
     /// Receive a successful `/keys/upload` response.
     ///
     /// # Arguments

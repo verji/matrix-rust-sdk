@@ -1408,6 +1408,21 @@ impl Encryption {
         }
     }
 
+    pub(crate) async fn ensure_device_keys_upload(&self) -> Result<()> {
+        let olm = self.client.olm_machine().await;
+        let olm = olm.as_ref().ok_or(Error::NoOlmMachine)?;
+
+        if let Some((request_id, request)) = olm.upload_device_keys().await? {
+            let request = request.into();
+            self.client.keys_upload(&request_id, &request).await?;
+
+            let (request_id, request) = olm.query_keys_for_users([olm.user_id()]);
+            self.client.keys_query(&request_id, request.device_keys).await?;
+        }
+
+        Ok(())
+    }
+
     pub(crate) async fn update_state_after_keys_query(&self, response: &get_keys::v3::Response) {
         self.recovery().update_state_after_keys_query(response).await;
 

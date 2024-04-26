@@ -202,8 +202,6 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             let oidc_client = self.register_client().await?;
 
-            // TODO: Create a `vodozemac::Account` which we'll feed into a new `OlmMachine`
-            // constructor.
             let account = vodozemac::olm::Account::new();
             let public_key = account.identity_keys().curve25519;
             let device_id = public_key;
@@ -255,7 +253,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             // Upload the device keys and stuff.
             self.client.encryption().import_secrets_bundle(&bundle).await?;
-            // TODO: Make an explicit call to upload the device keys and a /keys/query?
+            self.client.encryption().ensure_device_keys_upload().await.unwrap();
             self.client.encryption().run_initialization_tasks(None).await.unwrap();
 
             self.state.set(LoginProgress::Done);
