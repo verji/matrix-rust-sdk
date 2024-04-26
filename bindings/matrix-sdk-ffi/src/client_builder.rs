@@ -392,6 +392,8 @@ impl ClientBuilder {
         } else if let Some(base_path) = &builder.base_path {
             let data_path = PathBuf::from(base_path);
             fs::create_dir_all(&data_path)?;
+
+            inner_builder = inner_builder.sqlite_store(&data_path, builder.passphrase.as_deref());
         }
 
         // Determine server either from URL, server name or user ID.
