@@ -326,7 +326,7 @@ impl Oidc {
             return Ok(());
         };
 
-        // FIXME We shouldn't be using the crypto store for that! see also https://github.com/matrix-org/matrix-rust-sdk/issues/2472
+        // FIXME: We shouldn't be using the crypto store for that! see also https://github.com/matrix-org/matrix-rust-sdk/issues/2472
         let olm_machine_lock = self.client.olm_machine().await;
         let olm_machine =
             olm_machine_lock.as_ref().expect("there has to be an olm machine, hopefully?");
@@ -950,6 +950,16 @@ impl Oidc {
         // At this point the Olm machine has been set up.
 
         // Enable the cross-process lock for refreshes, if needs be.
+        self.enable_cross_process_lock().await?;
+
+        #[cfg(feature = "e2e-encryption")]
+        self.client.encryption().run_initialization_tasks(None).await?;
+
+        Ok(())
+    }
+
+    pub(crate) async fn enable_cross_process_lock(&self) -> Result<()> {
+        // Enable the cross-process lock for refreshes, if needs be.
         self.deferred_enable_cross_process_refresh_lock().await?;
 
         if let Some(cross_process_manager) = self.ctx().cross_process_token_refresh_manager.get() {
@@ -975,9 +985,6 @@ impl Oidc {
                     .map_err(|err| crate::Error::Oidc(err.into()))?;
             }
         }
-
-        #[cfg(feature = "e2e-encryption")]
-        self.client.encryption().run_initialization_tasks(None).await?;
 
         Ok(())
     }

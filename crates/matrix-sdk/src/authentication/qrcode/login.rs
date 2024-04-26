@@ -226,8 +226,11 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             let session_tokens = oidc_client.wait_for_tokens(&auth_grant_response).await?;
             self.client.oidc().set_session_tokens(session_tokens);
-            let whoami_response = self.client.whoami().await?;
 
+            // TODO: This snippet is almost the same as the Oidc::finish_login_method(), why
+            // is that method even a public method and not called as part of the set session
+            // tokens method.
+            let whoami_response = self.client.whoami().await?;
             self.client
                 .set_session_meta(
                     SessionMeta {
@@ -238,6 +241,8 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
                 )
                 .await
                 .unwrap();
+
+            self.client.oidc().enable_cross_process_lock().await.unwrap();
 
             // Tell the existing device that we're logged in.
             let message = QrAuthMessage::LoginSuccess {};
