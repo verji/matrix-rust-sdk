@@ -102,6 +102,10 @@ impl QrCodeData {
         reader.read_exact(&mut prefix)?;
         let version = reader.read_u8()?;
 
+        if PREFIX != prefix {
+            todo!("Invalid prefix {prefix:?}")
+        }
+
         if version == VERSION {
             let mode = reader.read_u8()?;
             reader.read_exact(&mut public_key)?;
