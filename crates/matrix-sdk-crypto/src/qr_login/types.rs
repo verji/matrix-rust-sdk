@@ -42,6 +42,8 @@ pub enum CryptoQrCodeDecodeError {
     InvalidVersion(u8),
     #[error("The QR code data could not have been decoded from a base64 string: {0:?}")]
     Base64(#[from] vodozemac::Base64DecodeError),
+    #[error("The QR code data has an unexpected prefix, expected: {expected:?}, got {got:?}")]
+    InvalidPrefix { expected: &'static [u8], got: [u8; 6] },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,7 +105,7 @@ impl QrCodeData {
         let version = reader.read_u8()?;
 
         if PREFIX != prefix {
-            todo!("Invalid prefix {prefix:?}")
+            return Err(CryptoQrCodeDecodeError::InvalidPrefix { expected: PREFIX, got: prefix });
         }
 
         if version == VERSION {
