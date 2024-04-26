@@ -16,6 +16,7 @@ use http::{
     header::{CONTENT_TYPE, ETAG, EXPIRES, IF_MATCH, IF_NONE_MATCH, LAST_MODIFIED},
     Method, StatusCode,
 };
+use tracing::instrument;
 use url::Url;
 
 use super::requests;
@@ -90,6 +91,7 @@ impl RendezvousChannel {
         &self.rendezvous_url
     }
 
+    #[instrument]
     async fn receive_data_helper(
         client: &reqwest::Client,
         etag: Option<String>,
@@ -102,6 +104,8 @@ impl RendezvousChannel {
         }
 
         let response = builder.send().await?;
+
+        tracing::debug!("Received data from the rendezvous channel {response:?}");
 
         let status_code = response.status();
 
@@ -137,6 +141,7 @@ impl RendezvousChannel {
         Ok(message)
     }
 
+    #[instrument(skip_all)]
     pub(super) async fn send_data(
         &mut self,
         body: Vec<u8>,
@@ -155,8 +160,12 @@ impl RendezvousChannel {
             request = request.header(CONTENT_TYPE, content_type);
         }
 
+        tracing::debug!("Sending a request to the rendezvous channel {request:?}");
+
         let response = request.send().await?;
         let status = response.status();
+
+        tracing::debug!("Response for the rendezvous sending request {response:?}");
 
         if status.is_success() {
             let etag = response.headers().get(ETAG).unwrap().to_str().unwrap().to_owned();
