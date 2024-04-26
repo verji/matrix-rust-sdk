@@ -293,12 +293,15 @@ impl ClientBuilder {
 
             // If a base directory was configured, create a random subdirectory, we will
             // rename this directory later on.
-            let base_directory = if let Some(base_path) = &builder.base_path {
+            let directories = if let Some(base_path) = &builder.base_path {
                 let base_directory = PathBuf::from(base_path);
-                builder =
-                    builder.base_path(base_directory.join(&uuid).to_str().unwrap().to_string());
+                let random_dir = base_directory.join(&uuid);
 
-                Some(base_directory)
+                tracing::debug!("Setting the Client storage path to {random_dir:?}");
+
+                builder = builder.base_path(random_dir.to_str().unwrap().to_string());
+
+                Some((base_directory, random_dir))
             } else {
                 None
             };
@@ -328,12 +331,15 @@ impl ClientBuilder {
             // Clients want to scope the per-client directory by the user ID, but the user
             // ID is only available once we logged in. So rename the uuid based
             // directory into the user name's directory.
-            if let Some(base_directory) = base_directory {
+            if let Some((base_directory, random_dir)) = directories {
                 let user_id = client.user_id().unwrap();
-                let from = base_directory.join(uuid);
-                let to = base_directory.join(sanitize(&user_id));
+                let user_dir = base_directory.join(sanitize(&user_id));
 
-                fs::rename(from, to).unwrap();
+                tracing::debug!(
+                    "Renaming the Client storage path from {random_dir:?} to {user_dir:?}"
+                );
+
+                fs::rename(random_dir, user_dir).unwrap();
             }
 
             Ok(client)
