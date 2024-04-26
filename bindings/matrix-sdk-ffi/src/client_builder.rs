@@ -288,8 +288,28 @@ impl ClientBuilder {
         progress_listener: Box<dyn QrLoginProgressListener>,
     ) -> Result<Arc<Client>, ClientBuildError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode {
-            let builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
+            let mut builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
+            let uuid = uuid::Uuid::new_v4().to_string();
+
+            // If a base directory was configured, create a random subdirectory, we will
+            // rename this directory later on.
+            let base_directory = if let Some(base_path) = &builder.base_path {
+                let base_directory = PathBuf::from(base_path);
+                builder =
+                    builder.base_path(base_directory.join(&uuid).to_str().unwrap().to_string());
+
+                Some(base_directory)
+            } else {
+                None
+            };
+
             let client = builder.build().await?;
+
+            // TODO: Check for SS support here.
+            if client.sliding_sync_proxy().is_none() {
+                todo!()
+            }
+
             let client_metadata = oidc_configuration.try_into().unwrap();
 
             let oidc = client.inner.oidc();
@@ -304,6 +324,17 @@ impl ClientBuilder {
             }));
 
             login.await.unwrap();
+
+            // Clients want to scope the per-client directory by the user ID, but the user
+            // ID is only available once we logged in. So rename the uuid based
+            // directory into the user name's directory.
+            if let Some(base_directory) = base_directory {
+                let user_id = client.user_id().unwrap();
+                let from = base_directory.join(uuid);
+                let to = base_directory.join(sanitize(&user_id));
+
+                fs::rename(from, to).unwrap();
+            }
 
             Ok(client)
         } else {
@@ -346,12 +377,15 @@ impl ClientBuilder {
         let builder = unwrap_or_clone_arc(self);
         let mut inner_builder = builder.inner;
 
-        if let (Some(base_path), Some(username)) = (builder.base_path, &builder.username) {
+        if let (Some(base_path), Some(username)) = (&builder.base_path, &builder.username) {
             // Determine store path
             let data_path = PathBuf::from(base_path).join(sanitize(username));
             fs::create_dir_all(&data_path)?;
 
             inner_builder = inner_builder.sqlite_store(&data_path, builder.passphrase.as_deref());
+        } else if let Some(base_path) = &builder.base_path {
+            let data_path = PathBuf::from(base_path);
+            fs::create_dir_all(&data_path)?;
         }
 
         // Determine server either from URL, server name or user ID.
