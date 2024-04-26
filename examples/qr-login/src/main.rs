@@ -100,6 +100,36 @@ fn client_metadata() -> VerifiedClientMetadata {
     .unwrap()
 }
 
+async fn print_devices(client: &Client) -> Result<()> {
+    let user_id = client.user_id().unwrap();
+    let own_device =
+        client.encryption().get_own_device().await?.expect("We should have our own device by now");
+
+    println!(
+        "Status of our own device {}",
+        if own_device.is_cross_signed_by_owner() { "✅" } else { "❌" }
+    );
+
+    println!("Devices of user {user_id}");
+
+    for device in client.encryption().get_user_devices(user_id).await?.devices() {
+        if device.device_id()
+            == client.device_id().expect("We should be logged in now and know our device id")
+        {
+            continue;
+        }
+
+        println!(
+            "   {:<10} {:<30} {:<}",
+            device.device_id(),
+            device.display_name().unwrap_or("-"),
+            if device.is_verified() { "✅" } else { "❌" }
+        );
+    }
+
+    Ok(())
+}
+
 async fn login_and_scan(proxy: Option<Url>) -> Result<()> {
     println!("Please enter the base64 string other device is displaying: ");
 
@@ -111,13 +141,15 @@ async fn login_and_scan(proxy: Option<Url>) -> Result<()> {
     let data = QrCodeData::from_base64(input).context("Couldn't parse the base64 QR code data")?;
 
     // TODO: Get the homeserver from the QR code.
-    let mut client = Client::builder().homeserver_url("https://synapse-oidc.lab.element.dev/");
+    let mut client =
+        Client::builder().server_name_or_homeserver_url("https://synapse-oidc.lab.element.dev/");
 
     if let Some(proxy) = proxy {
         client = client.proxy(proxy).disable_ssl_verification();
     }
 
     let client = client.build().await?;
+
     let metadata = client_metadata();
     let oidc = client.oidc();
 
@@ -149,9 +181,12 @@ async fn login_and_scan(proxy: Option<Url>) -> Result<()> {
 
     let status = client.encryption().cross_signing_status().await.unwrap();
     let user_id = client.user_id().unwrap();
+
     println!(
         "Successfully logged in as {user_id} using the qr code, cross-signing status: {status:?}"
     );
+
+    print_devices(&client).await?;
 
     Ok(())
 }
