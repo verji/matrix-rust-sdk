@@ -328,24 +328,22 @@ impl<'a> LoginWithQrCode<'a> {
     async fn register_client(&self) -> Result<OidcClient, Error> {
         // Let's figure out the OIDC issuer, this fetches the info from the homeserver.
         let issuer = self.client.oidc().fetch_authentication_issuer().await.unwrap();
-        // TODO: How do I get the account management URL.
-        let issuer_info = AuthenticationServerInfo::new(issuer, None);
 
         let registration_response = self
             .client
             .oidc()
-            .register_client(&issuer_info.issuer, self.client_metadata.clone(), None)
+            .register_client(&issuer, self.client_metadata.clone(), None)
             .await
             .unwrap();
 
         let client_secret = registration_response.client_secret.map(ClientSecret::new);
         let client_id = ClientId::new(registration_response.client_id);
-        let issuer_url = IssuerUrl::new(issuer_info.issuer.clone())?;
+        let issuer_url = IssuerUrl::new(issuer.clone())?;
 
         // Let's put the relevant data we got from the `register_client()` request into
         // the `Client`, why isn't `register_client()` doing this automagically?
         self.client.oidc().restore_registered_client(
-            issuer_info,
+            issuer,
             self.client_metadata.clone(),
             ClientCredentials::None { client_id: client_id.as_str().to_owned() },
         );
