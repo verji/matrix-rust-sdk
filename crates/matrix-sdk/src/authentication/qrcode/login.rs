@@ -105,7 +105,7 @@ pub type OidcClientInner<
 
 pub struct OidcClient {
     inner: OidcClientInner,
-    http_client: openidconnect::reqwest::Client,
+    http_client: HttpClient,
 }
 
 impl OidcClient {
@@ -283,20 +283,7 @@ impl<'c> openidconnect::AsyncHttpClient<'c> for HttpClient {
 
     fn call(&'c self, request: openidconnect::HttpRequest) -> Self::Future {
         Box::pin(async move {
-            let url = Url::parse(&request.uri().to_string()).unwrap();
-            let method = Method::from_str(request.method().as_str()).unwrap();
-
-            let response = self.inner.request(method, url).send().await.unwrap();
-
-            let mut builder =
-                openidconnect::http::Response::builder().status(response.status().as_u16());
-
-            for (name, value) in response.headers().iter() {
-                builder = builder.header(name.as_str(), value.as_bytes());
-            }
-
-            let body = response.bytes().await.unwrap().to_vec();
-            let response = builder.body(body).unwrap();
+            let response = self.inner.call(request).await.unwrap();
 
             Ok(response)
         })
@@ -348,12 +335,7 @@ impl<'a> LoginWithQrCode<'a> {
             ClientCredentials::None { client_id: client_id.as_str().to_owned() },
         );
 
-        // let http_client = self.client.inner.http_client.clone();
-        let http_client = openidconnect::reqwest::Client::builder()
-            // .proxy(Proxy::all("http://localhost:8011").unwrap())
-            // .danger_accept_invalid_certs(true)
-            .build()
-            .unwrap();
+        let http_client = self.client.inner.http_client.clone();
         let provider_metadata =
             DeviceProviderMetadata::discover_async(issuer_url, &http_client).await.unwrap();
 
