@@ -39,7 +39,7 @@ markdown = ["ruma/markdown"]
 native-tls = ["reqwest/native-tls"]
 rustls-tls = ["reqwest/rustls-tls"]
 socks = ["reqwest/socks"]
-sso-login = ["dep:hyper", "dep:rand", "dep:tower"]
+sso-login = ["dep:axum", "dep:rand", "dep:tower"]
 image-proc = ["dep:image"]
 image-rayon = ["image-proc", "image?/rayon"]
 
@@ -72,6 +72,7 @@ as_variant = { workspace = true }
 async-channel = "2.1.0"
 async-stream = { workspace = true }
 async-trait = { workspace = true }
+axum = { version = "0.7.4", optional = true }
 base64 = { workspace = true }
 bytes = "1.1.0"
 bytesize = "1.1"
@@ -85,7 +86,6 @@ eyre = { version = "0.6.8", optional = true }
 futures-core = { workspace = true }
 futures-util = { workspace = true }
 http = { workspace = true }
-hyper = { version = "0.14.20", features = ["http1", "http2", "server"], optional = true }
 imbl = { workspace = true, features = ["serde"] }
 indexmap = "2.0.2"
 js_int = "0.2.2"
@@ -126,7 +126,7 @@ optional = true
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = { version = "0.3.0", features = ["futures"] }
 reqwest = { version = "0.11.10", default_features = false }
-tokio = { workspace = true }
+tokio = { workspace = true, features = ["macros"] }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 backoff = { version = "0.4.0", features = ["tokio"] }
