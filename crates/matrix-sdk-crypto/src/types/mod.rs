@@ -258,7 +258,7 @@ impl<'de> Deserialize<'de> for Signatures {
         D: Deserializer<'de>,
     {
         let map: BTreeMap<OwnedUserId, BTreeMap<OwnedDeviceKeyId, String>> =
-            serde::Deserialize::deserialize(deserializer)?;
+            Deserialize::deserialize(deserializer)?;
 
         let map = map
             .into_iter()
@@ -312,7 +312,7 @@ impl Serialize for Signatures {
             })
             .collect();
 
-        serde::Serialize::serialize(&signatures, serializer)
+        Serialize::serialize(&signatures, serializer)
     }
 }
 
@@ -459,7 +459,7 @@ impl<'de, T: Algorithm + Ord + Deserialize<'de>> Deserialize<'de> for SigningKey
     where
         D: Deserializer<'de>,
     {
-        let map: BTreeMap<T, String> = serde::Deserialize::deserialize(deserializer)?;
+        let map: BTreeMap<T, String> = Deserialize::deserialize(deserializer)?;
 
         let map: Result<_, _> = map
             .into_iter()

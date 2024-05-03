@@ -28,6 +28,7 @@ use crate::{
     Client, RefreshTokenError, SessionChange,
 };
 
+#[cfg(feature = "experimental-oidc")]
 pub mod qrcode;
 
 /// Session tokens, for any kind of authentication.

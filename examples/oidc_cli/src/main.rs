@@ -742,9 +742,10 @@ async fn build_client(data_dir: &Path) -> anyhow::Result<(Client, ClientSession,
                         ));
                     }
                     Err(error) => {
-                        if error.as_client_api_error().is_some_and(|err| {
-                            err.status_code == matrix_sdk::reqwest::StatusCode::NOT_FOUND
-                        }) {
+                        if error
+                            .as_client_api_error()
+                            .is_some_and(|err| err.status_code == StatusCode::NOT_FOUND)
+                        {
                             println!("This homeserver doesn't advertise an authentication issuer.");
                         } else {
                             println!("Error fetching the authentication issuer: {error:?}");
@@ -938,7 +939,7 @@ async fn on_room_message(event: OriginalSyncRoomMessageEvent, room: Room) {
     }
     let MessageType::Text(text_content) = &event.content.msgtype else { return };
 
-    let room_name = match room.display_name().await {
+    let room_name = match room.computed_display_name().await {
         Ok(room_name) => room_name.to_string(),
         Err(error) => {
             println!("Error getting room display name: {error}");

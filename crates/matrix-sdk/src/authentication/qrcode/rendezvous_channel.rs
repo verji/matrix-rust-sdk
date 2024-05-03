@@ -55,7 +55,7 @@ impl RendezvousChannel {
         client: HttpClient,
         rendezvous_server: &Url,
     ) -> Result<Self, HttpError> {
-        let request = self::requests::create_rendezvous::Request::new();
+        let request = requests::create_rendezvous::Request::new();
         let response = client
             .send(request, None, rendezvous_server.to_string(), None, &[], Default::default())
             .await?;
