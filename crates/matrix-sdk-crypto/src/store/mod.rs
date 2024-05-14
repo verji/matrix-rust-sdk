@@ -61,6 +61,8 @@ use tracing::{info, warn};
 use vodozemac::{base64_encode, megolm::SessionOrdering, Curve25519PublicKey};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
+#[cfg(doc)]
+use crate::{backups::BackupMachine, identities::OwnUserIdentity};
 use crate::{
     gossiping::GossippedSecret,
     identities::{
@@ -831,7 +833,7 @@ pub enum SecretsBundleExportError {
     /// We're missing one or multiple cross-signing keys.
     #[error("The store is missing one or multiple cross-signing keys")]
     MissingCrossSigningKey(KeyUsage),
-    /// We're missing all cross-signing keys..
+    /// We're missing all cross-signing keys.
     #[error("The store doesn't contain any cross-signing keys")]
     MissingCrossSigningKeys,
     /// We have a backup key stored, but we don't know the version of the
@@ -1262,6 +1264,17 @@ impl Store {
         Ok(self.inner.identity.lock().await.status().await)
     }
 
+    /// Export all the secrets we have in the store into a [`SecretsBundle`].
+    ///
+    /// This method will export all the private cross-signing keys and, if
+    /// available, the private part of a backup key and its accompanying
+    /// version.
+    ///
+    /// The method will fail if we don't have all three private cross-signing
+    /// keys available.
+    ///
+    /// **Warning**: Only export this and share it with a trusted recipient,
+    /// i.e. if an existing device is sharing this with a new device.
     pub async fn export_secrets_bundle(&self) -> Result<SecretsBundle, SecretsBundleExportError> {
         let Some(cross_signing) = self.export_cross_signing_keys().await? else {
             return Err(SecretsBundleExportError::MissingCrossSigningKeys);
@@ -1299,6 +1312,18 @@ impl Store {
         })
     }
 
+    /// Import and persists secrets from a [`SecretsBundle`].
+    ///
+    /// This method will import all the private cross-signing keys and, if
+    /// available, the private part of a backup key and its accompanying
+    /// version into the store.
+    ///
+    /// **Warning**: Only import this from a trusted source, i.e. if an existing
+    /// device is sharing this with a new device. The imported cross-signing
+    /// keys will create a [`OwnUserIdentity`] and mark it as verified.
+    ///
+    /// The backup key will be persisted in the store and can be enabled using
+    /// the [`BackupMachine`].
     pub async fn import_secrets_bundle(
         &self,
         bundle: &SecretsBundle,
@@ -1324,8 +1349,10 @@ impl Store {
             )
             .await?;
 
-        let public_identity = identity.to_public_identity().await.expect("TODO");
-        public_identity.mark_as_verified();
+        let public_identity = identity.to_public_identity().await.expect(
+            "We should be able to create a new public identity since we just imported \
+             all the private cross-signing keys",
+        );
 
         changes.private_identity = Some(identity.clone());
         changes.identities.new.push(ReadOnlyUserIdentities::Own(public_identity));

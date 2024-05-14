@@ -1,4 +1,4 @@
-// Copyright 2022 The Matrix.org Foundation C.I.C.
+// Copyright 2022-2024 The Matrix.org Foundation C.I.C.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -46,43 +46,14 @@ mod cross_signing;
 mod device_keys;
 pub mod events;
 mod one_time_keys;
+pub mod qr_login;
 
 pub use self::{backup::*, cross_signing::*, device_keys::*, one_time_keys::*};
 use crate::store::BackupDecryptionKey;
 
-#[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]
-pub struct SecretsBundle {
-    pub cross_signing: CrossSigningSecrets,
-    pub backup: Option<BackupSecrets>,
-}
-
-#[derive(Deserialize, Clone, Serialize, ZeroizeOnDrop)]
-pub struct CrossSigningSecrets {
-    pub master_key: String,
-    pub user_signing_key: String,
-    pub self_signing_key: String,
-}
-
-impl std::fmt::Debug for CrossSigningSecrets {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CrossSigningSecrets")
-            .field("master_key", &"...")
-            .field("user_signing_key", &"...")
-            .field("self_signing_key", &"...")
-            .finish()
-    }
-}
-
-#[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]
-pub struct MegolmBackupV1Curve25519AesSha2Secrets {
-    #[serde(serialize_with = "backup_key_to_base64", deserialize_with = "backup_key_from_base64")]
-    pub key: BackupDecryptionKey,
-    pub backup_version: String,
-}
-
 macro_rules! from_base64 {
     ($foo:ident, $name:ident) => {
-        pub fn $name<'de, D>(deserializer: D) -> Result<$foo, D::Error>
+        pub(crate) fn $name<'de, D>(deserializer: D) -> Result<$foo, D::Error>
         where
             D: Deserializer<'de>,
         {
@@ -98,7 +69,7 @@ macro_rules! from_base64 {
 
 macro_rules! to_base64 {
     ($foo:ident, $name:ident) => {
-        fn $name<S>(v: &$foo, serializer: S) -> Result<S::Ok, S::Error>
+        pub(crate) fn $name<S>(v: &$foo, serializer: S) -> Result<S::Ok, S::Error>
         where
             S: Serializer,
         {
@@ -112,17 +83,68 @@ macro_rules! to_base64 {
     };
 }
 
+/// Struct containing the bundle of secrets to fully activate a new devices for
+/// end-to-end encryption.
+#[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]
+pub struct SecretsBundle {
+    /// The cross-signing keys.
+    pub cross_signing: CrossSigningSecrets,
+    /// The backup key, if available.
+    pub backup: Option<BackupSecrets>,
+}
+
+/// Data for the secrets bundle containing the cross-signing keys.
+#[derive(Deserialize, Clone, Serialize, ZeroizeOnDrop)]
+pub struct CrossSigningSecrets {
+    /// The seed for the private part of the cross-signing master key, encoded
+    /// as base64.
+    pub master_key: String,
+    /// The seed for the private part of the cross-signing user-signing key,
+    /// encoded as base64.
+    pub user_signing_key: String,
+    /// The seed for the private part of the cross-signing self-signing key,
+    /// encoded as base64.
+    pub self_signing_key: String,
+}
+
+impl std::fmt::Debug for CrossSigningSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CrossSigningSecrets")
+            .field("master_key", &"...")
+            .field("user_signing_key", &"...")
+            .field("self_signing_key", &"...")
+            .finish()
+    }
+}
+
+/// Data for the secrets bundle containing the secret and version for a
+/// `m.megolm_backup.v1.curve25519-aes-sha2` backup.
+#[derive(Debug, Deserialize, Clone, Serialize, ZeroizeOnDrop)]
+pub struct MegolmBackupV1Curve25519AesSha2Secrets {
+    /// The private half of the backup key, can be used to access and decrypt
+    /// room keys in the backup. Also called the recovery key in the
+    /// [spec](https://spec.matrix.org/v1.10/client-server-api/#recovery-key).
+    #[serde(serialize_with = "backup_key_to_base64", deserialize_with = "backup_key_from_base64")]
+    pub key: BackupDecryptionKey,
+    /// The backup version that is tied to the above backup key.
+    pub backup_version: String,
+}
+
 from_base64!(BackupDecryptionKey, backup_key_from_base64);
 to_base64!(BackupDecryptionKey, backup_key_to_base64);
 
+/// Enum for the algorithm-specific secrets for the room key backup.
 #[derive(Debug, Clone, ZeroizeOnDrop, Serialize, Deserialize)]
 #[serde(tag = "algorithm")]
 pub enum BackupSecrets {
+    /// Backup secrets for the `m.megolm_backup.v1.curve25519-aes-sha2` backup
+    /// algorithm.
     #[serde(rename = "m.megolm_backup.v1.curve25519-aes-sha2")]
     MegolmBackupV1Curve25519AesSha2(MegolmBackupV1Curve25519AesSha2Secrets),
 }
 
 impl BackupSecrets {
+    /// Get the algorithm of the secrets contained in the [`BackupSecrets`].
     pub fn algorithm(&self) -> &str {
         match &self {
             BackupSecrets::MegolmBackupV1Curve25519AesSha2(_) => {
@@ -479,37 +501,11 @@ impl<'de, T: Algorithm + Ord + Deserialize<'de>> Deserialize<'de> for SigningKey
 // likes to base64 encode all byte slices.
 //
 // This ensures that we serialize/deserialize in a Matrix-compatible way.
-pub(crate) fn deserialize_curve_key<'de, D>(de: D) -> Result<Curve25519PublicKey, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let key: String = Deserialize::deserialize(de)?;
-    Curve25519PublicKey::from_base64(&key).map_err(serde::de::Error::custom)
-}
+from_base64!(Curve25519PublicKey, deserialize_curve_key);
+to_base64!(Curve25519PublicKey, serialize_curve_key);
 
-pub(crate) fn serialize_curve_key<S>(key: &Curve25519PublicKey, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let key = key.to_base64();
-    s.serialize_str(&key)
-}
-
-pub(crate) fn deserialize_ed25519_key<'de, D>(de: D) -> Result<Ed25519PublicKey, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let key: String = Deserialize::deserialize(de)?;
-    Ed25519PublicKey::from_base64(&key).map_err(serde::de::Error::custom)
-}
-
-pub(crate) fn serialize_ed25519_key<S>(key: &Ed25519PublicKey, s: S) -> Result<S::Ok, S::Error>
-where
-    S: Serializer,
-{
-    let key = key.to_base64();
-    s.serialize_str(&key)
-}
+from_base64!(Ed25519PublicKey, deserialize_ed25519_key);
+to_base64!(Ed25519PublicKey, serialize_ed25519_key);
 
 pub(crate) fn deserialize_curve_key_vec<'de, D>(de: D) -> Result<Vec<Curve25519PublicKey>, D::Error>
 where
@@ -543,7 +539,6 @@ mod test {
     #[test]
     fn serialize_secrets_bundle() {
         let json = json!({
-            "type": "m.login.secrets",
             "cross_signing": {
                 "master_key": "rTtSv67XGS6k/rg6/yTG/m573cyFTPFRqluFhQY+hSw",
                 "self_signing_key": "4jbPt7jh5D2iyM4U+3IDa+WthgJB87IQN1ATdkau+xk",

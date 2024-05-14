@@ -389,49 +389,34 @@ impl PrivateCrossSigningIdentity {
         }
     }
 
+    async fn public_keys(
+        &self,
+    ) -> Result<(MasterPubkey, SelfSigningPubkey, UserSigningPubkey), SignatureError> {
+        let master_private_key = self.master_key.lock().await;
+        let master_private_key =
+            master_private_key.as_ref().ok_or(SignatureError::MissingSigningKey)?;
+        let self_signing_private_key = self.self_signing_key.lock().await;
+        let self_signing_private_key =
+            self_signing_private_key.as_ref().ok_or(SignatureError::MissingSigningKey)?;
+        let user_signing_private_key = self.user_signing_key.lock().await;
+        let user_signing_private_key =
+            user_signing_private_key.as_ref().ok_or(SignatureError::MissingSigningKey)?;
+
+        let mut master = master_private_key.public_key().to_owned();
+        let mut self_signing = self_signing_private_key.public_key().to_owned();
+        let mut user_signing = user_signing_private_key.public_key().to_owned();
+
+        master_private_key.sign_subkey(master.as_mut());
+        master_private_key.sign_subkey(self_signing.as_mut());
+        master_private_key.sign_subkey(user_signing.as_mut());
+
+        Ok((master, self_signing, user_signing))
+    }
+
     pub(crate) async fn to_public_identity(
         &self,
     ) -> Result<ReadOnlyOwnUserIdentity, SignatureError> {
-        let master = self
-            .master_key
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(SignatureError::MissingSigningKey)?
-            .public_key()
-            .clone();
-
-        let mut self_signing = self
-            .self_signing_key
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(SignatureError::MissingSigningKey)?
-            .public_key()
-            .clone();
-
-        self.master_key
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(SignatureError::MissingSigningKey)?
-            .sign_subkey(self_signing.as_mut());
-
-        let mut user_signing = self
-            .user_signing_key
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(SignatureError::MissingSigningKey)?
-            .public_key()
-            .clone();
-
-        self.master_key
-            .lock()
-            .await
-            .as_ref()
-            .ok_or(SignatureError::MissingSigningKey)?
-            .sign_subkey(user_signing.as_mut());
+        let (master, self_signing, user_signing) = self.public_keys().await?;
 
         let identity = ReadOnlyOwnUserIdentity::new(master, self_signing, user_signing)?;
         identity.mark_as_verified();
@@ -649,6 +634,8 @@ impl PrivateCrossSigningIdentity {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
     use matrix_sdk_test::async_test;
     use ruma::{device_id, user_id, CanonicalJsonValue, DeviceKeyAlgorithm, DeviceKeyId, UserId};
     use serde_json::json;
@@ -797,7 +784,7 @@ mod tests {
             "We're only uploading our own signature"
         );
 
-        bob_public.master_key = master.try_into().unwrap();
+        bob_public.master_key = Arc::new(master.try_into().unwrap());
 
         user_signing.public_key().verify_master_key(bob_public.master_key()).unwrap();
     }

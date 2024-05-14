@@ -5,7 +5,9 @@ use std::{
 
 use camino::{Utf8Path, Utf8PathBuf};
 use clap::{Args, Subcommand};
-use uniffi_bindgen::{bindings::TargetLanguage, library_mode::generate_bindings};
+use uniffi_bindgen::{
+    bindings::swift::gen_swift::SwiftBindingGenerator, library_mode::generate_bindings,
+};
 use xshell::{cmd, pushd};
 
 use crate::{workspace, Result};
@@ -32,9 +34,11 @@ enum SwiftCommand {
         #[clap(long)]
         profile: Option<String>,
 
-        /// Build the given target only
+        /// Build the given target. This option can be specified multiple times
+        /// to build more than one. Omitting this option will build all
+        /// supported targets.
         #[clap(long)]
-        only_target: Option<String>,
+        target: Option<Vec<String>>,
 
         /// Move the generated xcframework and swift sources into the given
         /// components-folder
@@ -59,11 +63,11 @@ impl SwiftArgs {
                 release,
                 profile,
                 components_path,
-                only_target,
+                target: targets,
                 sequentially,
             } => {
                 let profile = profile.as_deref().unwrap_or(if release { "release" } else { "dev" });
-                build_xcframework(profile, only_target, components_path, sequentially)
+                build_xcframework(profile, targets, components_path, sequentially)
             }
         }
     }
@@ -161,13 +165,13 @@ fn build_library() -> Result<()> {
 }
 
 fn generate_uniffi(library_path: &Utf8Path, ffi_directory: &Utf8Path) -> Result<()> {
-    generate_bindings(library_path, None, &[TargetLanguage::Swift], None, ffi_directory, false)?;
+    generate_bindings(library_path, None, &SwiftBindingGenerator, None, ffi_directory, false)?;
     Ok(())
 }
 
 fn build_xcframework(
     profile: &str,
-    only_target: Option<String>,
+    targets: Option<Vec<String>>,
     components_path: Option<Utf8PathBuf>,
     sequentially: bool,
 ) -> Result<()> {
@@ -184,9 +188,13 @@ fn build_xcframework(
     create_dir_all(headers_dir.clone())?;
     create_dir_all(swift_dir.clone())?;
 
-    let targets = if let Some(triple) = only_target {
-        let target = TARGETS.iter().find(|t| t.triple == triple).expect("Invalid target specified");
-        vec![target]
+    let targets = if let Some(triples) = targets {
+        triples
+            .iter()
+            .map(|t| {
+                TARGETS.iter().find(|target| target.triple == *t).expect("Invalid target specified")
+            })
+            .collect()
     } else {
         TARGETS.iter().collect()
     };
