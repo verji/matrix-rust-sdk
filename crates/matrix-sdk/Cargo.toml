@@ -16,9 +16,7 @@ features = ["docsrs"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
-client = []
-server = []
-default = ["e2e-encryption", "automatic-room-key-forwarding", "sqlite", "native-tls", "client"]
+default = ["e2e-encryption", "automatic-room-key-forwarding", "sqlite", "native-tls"]
 testing = ["matrix-sdk-sqlite?/testing", "matrix-sdk-indexeddb?/testing", "matrix-sdk-base/testing", "wiremock"]
 
 e2e-encryption = [
@@ -47,6 +45,7 @@ uniffi = ["dep:uniffi", "matrix-sdk-base/uniffi"]
 
 experimental-oidc = [
     "ruma/unstable-msc2967",
+    "ruma/unstable-msc4108",
     "dep:chrono",
     "dep:http_old",
     "dep:language-tags",

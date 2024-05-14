@@ -24,7 +24,6 @@ mod grant_login;
 mod login;
 mod messages;
 mod rendezvous_channel;
-mod requests;
 mod secure_channel;
 
 pub use grant_login::ExistingAuthGrantDings;

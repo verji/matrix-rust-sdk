@@ -16,10 +16,10 @@ use http::{
     header::{CONTENT_TYPE, ETAG, EXPIRES, IF_MATCH, IF_NONE_MATCH, LAST_MODIFIED},
     Method, StatusCode,
 };
+use ruma::api::client::rendezvous::create_rendezvous_session;
 use tracing::instrument;
 use url::Url;
 
-use super::requests;
 use crate::{http_client::HttpClient, HttpError};
 
 pub type Etag = String;
@@ -55,7 +55,7 @@ impl RendezvousChannel {
         client: HttpClient,
         rendezvous_server: &Url,
     ) -> Result<Self, HttpError> {
-        let request = requests::create_rendezvous::Request::new();
+        let request = create_rendezvous_session::unstable::Request::default();
         let response = client
             .send(request, None, rendezvous_server.to_string(), None, &[], Default::default())
             .await?;
