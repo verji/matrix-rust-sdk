@@ -162,10 +162,6 @@ impl MasterSigning {
         self.inner.to_base64()
     }
 
-    pub fn to_base64(&self) -> String {
-        self.inner.to_base64()
-    }
-
     pub fn from_base64(user_id: OwnedUserId, key: &str) -> Result<Self, KeyError> {
         let inner = Signing::from_base64(key)?;
         let public_key = inner

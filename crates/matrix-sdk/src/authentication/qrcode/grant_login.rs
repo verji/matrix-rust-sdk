@@ -14,7 +14,7 @@
 
 use eyeball::SharedObservable;
 use futures_core::Stream;
-use matrix_sdk_base::crypto::{qr_login::QrCodeData, types::SecretsBundle};
+use matrix_sdk_base::crypto::types::{qr_login::QrCodeData, SecretsBundle};
 
 use super::messages::AuthorizationGrant;
 use crate::{
@@ -35,7 +35,6 @@ pub enum Channel {
 }
 
 pub struct ExistingAuthGrantDings {
-    client: Client,
     secrets_bundle: SecretsBundle,
     channel: Channel,
     qr_code_data: QrCodeData,
@@ -77,7 +76,7 @@ impl ExistingAuthGrantDings {
         let qr_code_data = channel.qr_code_data().clone();
         let channel = Channel::Insecure(channel);
 
-        Ok(Self { client, channel, qr_code_data, secrets_bundle, state: Default::default() })
+        Ok(Self { channel, qr_code_data, secrets_bundle, state: Default::default() })
     }
 
     pub fn qr_code_data(&self) -> &QrCodeData {
@@ -104,7 +103,7 @@ impl ExistingAuthGrantDings {
 
             let message = channel.receive_json().await.unwrap();
 
-            let QrAuthMessage::LoginProtocol { device_authorization_grant, protocol, device_id } =
+            let QrAuthMessage::LoginProtocol { device_authorization_grant, protocol, device_id: _ } =
                 message
             else {
                 todo!()

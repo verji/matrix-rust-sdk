@@ -14,13 +14,17 @@
 
 use http::{
     header::{CONTENT_TYPE, ETAG, EXPIRES, IF_MATCH, IF_NONE_MATCH, LAST_MODIFIED},
-    Method, StatusCode,
+    HeaderMap, HeaderName, Method, StatusCode,
 };
-use ruma::api::client::rendezvous::create_rendezvous_session;
+use ruma::api::{
+    client::rendezvous::create_rendezvous_session,
+    error::{FromHttpResponseError, HeaderDeserializationError, IntoHttpError, MatrixError},
+    EndpointError,
+};
 use tracing::instrument;
 use url::Url;
 
-use crate::{http_client::HttpClient, HttpError};
+use crate::{http_client::HttpClient, HttpError, RumaApiError};
 
 pub type Etag = String;
 
@@ -48,6 +52,19 @@ pub struct RendezvousMessage {
     pub status_code: StatusCode,
     pub body: Vec<u8>,
     pub content_type: String,
+}
+
+fn get_header(
+    header_map: &HeaderMap,
+    header_name: &HeaderName,
+) -> Result<String, FromHttpResponseError<RumaApiError>> {
+    let header = header_map
+        .get(header_name)
+        .ok_or(HeaderDeserializationError::MissingHeader(ETAG.to_string()))?;
+
+    let header = header.to_str()?.to_owned();
+
+    Ok(header)
 }
 
 impl RendezvousChannel {
@@ -108,13 +125,17 @@ impl RendezvousChannel {
         tracing::debug!("Received data from the rendezvous channel {response:?}");
 
         let status_code = response.status();
+        let headers = response.headers();
 
-        let etag = response.headers().get(ETAG).unwrap().to_str().unwrap().to_owned();
-        let expires = response.headers().get(EXPIRES).unwrap().to_str().unwrap().to_owned();
-        let last_modified =
-            response.headers().get(LAST_MODIFIED).unwrap().to_str().unwrap().to_owned();
-        let content_type =
-            response.headers().get(CONTENT_TYPE).map(|c| c.to_str().unwrap().to_owned());
+        let etag = get_header(headers, &ETAG)?;
+        let expires = get_header(headers, &EXPIRES)?;
+        let last_modified = get_header(headers, &LAST_MODIFIED)?;
+        let content_type = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .map(|c| c.to_str().map_err(FromHttpResponseError::<RumaApiError>::from))
+            .transpose()?
+            .map(ToOwned::to_owned);
 
         let body = response.bytes().await?.to_vec();
 
@@ -168,12 +189,21 @@ impl RendezvousChannel {
         tracing::debug!("Response for the rendezvous sending request {response:?}");
 
         if status.is_success() {
-            let etag = response.headers().get(ETAG).unwrap().to_str().unwrap().to_owned();
+            let etag = get_header(response.headers(), &ETAG)?;
             self.etag = etag;
 
             Ok(())
         } else {
-            todo!("Received an invalid response {status:?}")
+            let builder = http::Response::builder().status(status);
+            let body = response.bytes().await?;
+
+            let response = builder.body(body).map_err(IntoHttpError::from)?;
+            let error = FromHttpResponseError::<RumaApiError>::Server(RumaApiError::Other(
+                MatrixError::from_http_response(response),
+            ))
+            .into();
+
+            Err(error)
         }
     }
 }

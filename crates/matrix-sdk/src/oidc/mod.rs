@@ -186,14 +186,11 @@ use mas_oidc_client::{
         IdToken,
     },
 };
-use matrix_sdk_base::{crypto::qr_login::QrCodeData, once_cell::sync::OnceCell, SessionMeta};
-use rand::{rngs::StdRng, Rng, SeedableRng};
-use ruma::{
-    api::client::discovery::{
-        discover_homeserver::AuthenticationServerInfo, get_authentication_issuer,
-    },
-    OwnedDeviceId,
+use matrix_sdk_base::{
+    crypto::types::qr_login::QrCodeData, once_cell::sync::OnceCell, SessionMeta,
 };
+use rand::{rngs::StdRng, Rng, SeedableRng};
+use ruma::api::client::discovery::get_authentication_issuer;
 use serde::{Deserialize, Serialize};
 use sha2::Digest as _;
 use thiserror::Error;
@@ -212,13 +209,12 @@ mod tests;
 
 pub use self::{
     auth_code_builder::{OidcAuthCodeUrlBuilder, OidcAuthorizationData},
+    cross_process::CrossProcessRefreshLockError,
     end_session_builder::{OidcEndSessionData, OidcEndSessionUrlBuilder},
 };
 use self::{
     backend::{server::OidcServer, OidcBackend},
-    cross_process::{
-        CrossProcessRefreshLockError, CrossProcessRefreshLockGuard, CrossProcessRefreshManager,
-    },
+    cross_process::{CrossProcessRefreshLockGuard, CrossProcessRefreshManager},
 };
 use crate::{
     authentication::{
@@ -310,14 +306,14 @@ impl Oidc {
     /// olm machine has been initialized.
     ///
     /// Must be called after `set_session_meta`.
-    async fn deferred_enable_cross_process_refresh_lock(&self) -> Result<()> {
+    async fn deferred_enable_cross_process_refresh_lock(&self) {
         let deferred_init_lock = self.ctx().deferred_cross_process_lock_init.lock().await;
 
         // Don't `take()` the value, so that subsequent calls to
         // `enable_cross_process_refresh_lock` will keep on failing if we've enabled the
         // lock at least once.
         let Some(lock_value) = deferred_init_lock.as_ref() else {
-            return Ok(());
+            return;
         };
 
         // FIXME: We shouldn't be using the crypto store for that! see also https://github.com/matrix-org/matrix-rust-sdk/issues/2472
@@ -333,8 +329,6 @@ impl Oidc {
         // This method is guarded with the `deferred_cross_process_lock_init` lock held,
         // so this `set` can't be an error.
         let _ = self.ctx().cross_process_token_refresh_manager.set(manager);
-
-        Ok(())
     }
 
     /// The OpenID Connect authentication data.
@@ -730,7 +724,7 @@ impl Oidc {
         };
 
         self.client.set_session_meta(meta, None).await?;
-        self.deferred_enable_cross_process_refresh_lock().await?;
+        self.deferred_enable_cross_process_refresh_lock().await;
 
         self.client
             .inner
@@ -773,7 +767,7 @@ impl Oidc {
         }
 
         #[cfg(feature = "e2e-encryption")]
-        self.client.encryption().run_initialization_tasks(None).await?;
+        self.client.encryption().run_initialization_tasks(None).await;
 
         Ok(())
     }
@@ -935,24 +929,23 @@ impl Oidc {
         // At this point the Olm machine has been set up.
 
         // Enable the cross-process lock for refreshes, if needs be.
-        self.enable_cross_process_lock().await?;
+        self.enable_cross_process_lock().await.map_err(OidcError::from)?;
 
         #[cfg(feature = "e2e-encryption")]
-        self.client.encryption().run_initialization_tasks(None).await?;
+        self.client.encryption().run_initialization_tasks(None).await;
 
         Ok(())
     }
 
-    pub(crate) async fn enable_cross_process_lock(&self) -> Result<()> {
+    pub(crate) async fn enable_cross_process_lock(
+        &self,
+    ) -> Result<(), CrossProcessRefreshLockError> {
         // Enable the cross-process lock for refreshes, if needs be.
-        self.deferred_enable_cross_process_refresh_lock().await?;
+        self.deferred_enable_cross_process_refresh_lock().await;
 
         if let Some(cross_process_manager) = self.ctx().cross_process_token_refresh_manager.get() {
             if let Some(tokens) = self.session_tokens() {
-                let mut cross_process_guard = cross_process_manager
-                    .spin_lock()
-                    .await
-                    .map_err(|err| crate::Error::Oidc(err.into()))?;
+                let mut cross_process_guard = cross_process_manager.spin_lock().await?;
 
                 if cross_process_guard.hash_mismatch {
                     // At this point, we're finishing a login while another process had written
@@ -964,10 +957,7 @@ impl Oidc {
                     );
                 }
 
-                cross_process_guard
-                    .save_in_memory_and_db(&tokens)
-                    .await
-                    .map_err(|err| crate::Error::Oidc(err.into()))?;
+                cross_process_guard.save_in_memory_and_db(&tokens).await?;
             }
         }
 

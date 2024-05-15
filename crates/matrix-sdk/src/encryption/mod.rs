@@ -31,8 +31,7 @@ use futures_util::{
     stream::{self, StreamExt},
 };
 use matrix_sdk_base::crypto::{
-    types::SecretsBundle, CrossSigningBootstrapRequests, OlmMachine, OutgoingRequest,
-    RoomMessageRequest, ToDeviceRequest,
+    CrossSigningBootstrapRequests, OlmMachine, OutgoingRequest, RoomMessageRequest, ToDeviceRequest,
 };
 use matrix_sdk_common::executor::spawn;
 use ruma::{
@@ -620,9 +619,10 @@ impl Encryption {
         self.client.olm_machine().await.as_ref().map(|o| o.identity_keys().curve25519)
     }
 
+    #[cfg(feature = "experimental-oidc")]
     pub(crate) async fn import_secrets_bundle(
         &self,
-        bundle: &SecretsBundle,
+        bundle: &matrix_sdk_base::crypto::types::SecretsBundle,
     ) -> Result<(), SecretImportError> {
         let olm_machine = self.client.olm_machine().await;
         let olm_machine =
@@ -1373,10 +1373,10 @@ impl Encryption {
     /// proposal (MSC3967) to remove this requirement, which would allow for
     /// the initial upload of cross-signing keys without authentication,
     /// rendering this parameter obsolete.
-    pub(crate) async fn run_initialization_tasks(&self, auth_data: Option<AuthData>) -> Result<()> {
+    pub(crate) async fn run_initialization_tasks(&self, auth_data: Option<AuthData>) {
         let mut tasks = self.client.inner.e2ee.tasks.lock().unwrap();
-
         let this = self.clone();
+
         tasks.setup_e2ee = Some(spawn(async move {
             if this.settings().auto_enable_cross_signing {
                 if let Err(e) = this.bootstrap_cross_signing_if_needed(auth_data).await {
@@ -1393,8 +1393,6 @@ impl Encryption {
 
             this.update_verification_state().await;
         }));
-
-        Ok(())
     }
 
     /// Waits for end-to-end encryption initialization tasks to finish, if any
@@ -1409,6 +1407,7 @@ impl Encryption {
         }
     }
 
+    #[cfg(feature = "experimental-oidc")]
     pub(crate) async fn ensure_device_keys_upload(&self) -> Result<()> {
         let olm = self.client.olm_machine().await;
         let olm = olm.as_ref().ok_or(Error::NoOlmMachine)?;

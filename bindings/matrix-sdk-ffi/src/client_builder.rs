@@ -2,7 +2,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
-    crypto::qr_login::{CryptoQrCodeDecodeError, QrCodeModeData},
+    crypto::types::qr_login::{LoginQrCodeDecodeError, QrCodeModeData},
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     reqwest::Certificate,
     ruma::{
@@ -34,22 +34,23 @@ enum HomeserverConfig {
 
 #[derive(Debug, uniffi::Object)]
 pub struct QrCodeData {
-    inner: matrix_sdk::crypto::qr_login::QrCodeData,
+    inner: matrix_sdk::authentication::qrcode::QrCodeData,
 }
 
 #[uniffi::export]
 impl QrCodeData {
     #[uniffi::constructor]
     pub fn from_bytes(bytes: &[u8]) -> Result<Arc<Self>, QrCodeDecodeError> {
-        Ok(Self { inner: matrix_sdk::crypto::qr_login::QrCodeData::from_bytes(bytes)? }.into())
+        Ok(Self { inner: matrix_sdk::authentication::qrcode::QrCodeData::from_bytes(bytes)? }
+            .into())
     }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 #[uniffi(flat_error)]
-enum QrCodeDecodeError {
+pub enum QrCodeDecodeError {
     #[error("Error decoding QR code: {0:?}")]
-    Crypto(#[from] CryptoQrCodeDecodeError),
+    Crypto(#[from] LoginQrCodeDecodeError),
 }
 
 /// Enum describing the progress of the QR-code login.
@@ -319,7 +320,7 @@ impl ClientBuilder {
         oidc_configuration: &OidcConfiguration,
         progress_listener: Box<dyn QrLoginProgressListener>,
     ) -> Result<Arc<Client>, ClientBuildError> {
-        if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode {
+        if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode_data {
             let mut builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
             let uuid = uuid::Uuid::new_v4().to_string();
 

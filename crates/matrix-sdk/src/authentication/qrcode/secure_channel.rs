@@ -15,7 +15,7 @@
 use std::time::Duration;
 
 use http::StatusCode;
-use matrix_sdk_base::crypto::qr_login::{QrCodeData, QrCodeMode, QrCodeModeData};
+use matrix_sdk_base::crypto::types::qr_login::{QrCodeData, QrCodeMode, QrCodeModeData};
 use ruma::api::client::error::ErrorKind;
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
@@ -27,7 +27,7 @@ use vodozemac::secure_channel::{
 
 use super::{
     rendezvous_channel::{InboundChannelCreationResult, RendezvousChannel},
-    Error,
+    SecureChannelError as Error,
 };
 use crate::{config::RequestConfig, http_client::HttpClient};
 
@@ -46,7 +46,7 @@ impl SecureChannel {
     async fn new_helper(
         client: HttpClient,
         rendezvous_server: Url,
-        mode: QrCodeModeData,
+        mode_data: QrCodeModeData,
     ) -> Result<Self, Error> {
         let channel = RendezvousChannel::create_outbound(client, &rendezvous_server).await?;
         let rendezvous_url = channel.rendezvous_url().to_owned();
@@ -54,15 +54,9 @@ impl SecureChannel {
         let ecies = Ecies::new();
         let public_key = ecies.public_key();
 
-        let qr_code_data = QrCodeData { public_key, rendezvous_url, mode };
+        let qr_code_data = QrCodeData { public_key, rendezvous_url, mode_data };
 
         Ok(Self { channel, qr_code_data, ecies })
-    }
-
-    pub async fn login(client: reqwest::Client, rendezvous_url: Url) -> Result<Self, Error> {
-        let client = HttpClient::new(client, RequestConfig::short_retry());
-        let mode = QrCodeModeData::Login;
-        Self::new_helper(client, rendezvous_url, mode).await
     }
 
     pub(crate) async fn reciprocate(
@@ -110,12 +104,11 @@ impl SecureChannel {
 
     pub async fn connect(mut self) -> Result<AlmostEstablishedSecureChannel, Error> {
         let message = self.receive_data().await?;
-        let message = String::from_utf8(message).unwrap();
-        let message = InitialMessage::decode(&message).unwrap();
+        let message = std::str::from_utf8(&message)?;
+        let message = InitialMessage::decode(&message)?;
 
         let result = self.ecies.create_inbound_channel(&message)?;
-
-        let message = String::from_utf8(result.message).unwrap();
+        let message = std::str::from_utf8(&result.message)?;
 
         if message == LOGIN_INITIATE_MESSAGE {
             let mut secure_channel =
@@ -125,7 +118,10 @@ impl SecureChannel {
 
             Ok(AlmostEstablishedSecureChannel { secure_channel })
         } else {
-            todo!()
+            Err(Error::SecureChannelMessage {
+                expected: LOGIN_INITIATE_MESSAGE,
+                got: message.to_owned(),
+            })
         }
     }
 }
@@ -139,7 +135,7 @@ impl AlmostEstablishedSecureChannel {
         if check_code == self.secure_channel.check_code().to_digit() {
             Ok(self.secure_channel)
         } else {
-            todo!()
+            Err(Error::InvalidCheckCode)
         }
     }
 }
@@ -207,12 +203,12 @@ impl EstablishedSecureChannel {
 
     pub async fn receive(&mut self) -> Result<String, Error> {
         let message = self.receive_data().await?;
-        let ciphertext = String::from_utf8(message).unwrap();
-        let message = Message::decode(&ciphertext).unwrap();
+        let ciphertext = std::str::from_utf8(&message)?;
+        let message = Message::decode(ciphertext)?;
 
-        let decrypted = self.ecies.decrypt(&message).unwrap();
+        let decrypted = self.ecies.decrypt(&message)?;
 
-        Ok(String::from_utf8(decrypted).unwrap())
+        Ok(String::from_utf8(decrypted).map_err(|e| e.utf8_error())?)
     }
 
     pub fn check_code(&self) -> &CheckCode {
@@ -224,28 +220,31 @@ impl EstablishedSecureChannel {
         qr_code_data: &QrCodeData,
         expected_mode: QrCodeMode,
     ) -> Result<Self, Error> {
-        if qr_code_data.mode.mode_identifier() == expected_mode {
-            todo!("Same intent, throw error");
-        }
-
-        let client = HttpClient::new(client, RequestConfig::short_retry());
-        let ecies = Ecies::new();
-        let ecies = ecies.create_outbound_channel(qr_code_data.public_key)?;
-
-        // The initial response will have an empty body, so we can just drop it.
-        let InboundChannelCreationResult { channel, initial_message: _ } =
-            RendezvousChannel::create_inbound(client, &qr_code_data.rendezvous_url).await?;
-
-        let mut ret = Self { channel, ecies };
-
-        ret.send(LOGIN_INITIATE_MESSAGE).await?;
-
-        let response = ret.receive().await?;
-
-        if response == LOGIN_OK_MESSAGE {
-            Ok(ret)
+        if qr_code_data.mode() == expected_mode {
+            Err(Error::InvalidIntent)
         } else {
-            todo!()
+            let client = HttpClient::new(client, RequestConfig::short_retry());
+            let ecies = Ecies::new();
+            let ecies = ecies.create_outbound_channel(qr_code_data.public_key)?;
+
+            // The initial response will have an empty body, so we can just drop it.
+            let InboundChannelCreationResult { channel, initial_message: _ } =
+                RendezvousChannel::create_inbound(client, &qr_code_data.rendezvous_url).await?;
+
+            let mut ret = Self { channel, ecies };
+
+            ret.send(LOGIN_INITIATE_MESSAGE).await?;
+
+            let response = ret.receive().await?;
+
+            if response == LOGIN_OK_MESSAGE {
+                Ok(ret)
+            } else {
+                Err(Error::SecureChannelMessage {
+                    expected: LOGIN_OK_MESSAGE,
+                    got: response.to_owned(),
+                })
+            }
         }
     }
 }
