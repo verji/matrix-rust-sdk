@@ -20,7 +20,7 @@ use openidconnect::{
     HttpClientError, RequestTokenError, StandardErrorResponse,
 };
 use thiserror::Error;
-pub use vodozemac::secure_channel::{MessageDecodeError, SecureChannelError as EciesError};
+pub use vodozemac::ecies::{Error as EciesError, MessageDecodeError};
 
 use crate::{oidc::CrossProcessRefreshLockError, HttpError};
 

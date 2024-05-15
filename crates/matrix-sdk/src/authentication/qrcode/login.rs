@@ -40,7 +40,7 @@ use openidconnect::{
     IssuerUrl, OAuth2TokenResponse, ProviderMetadata, Scope, StandardErrorResponse,
 };
 use ruma::OwnedDeviceId;
-use vodozemac::{secure_channel::CheckCode, Curve25519PublicKey};
+use vodozemac::{ecies::CheckCode, Curve25519PublicKey};
 
 use super::{DeviceAuhorizationOidcError, SecureChannelError};
 use crate::{

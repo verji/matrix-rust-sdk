@@ -424,8 +424,8 @@ impl OidcCli {
         let input: u8 = input.parse().context("Could not parse the check code")?;
 
         dings.confirm_check_code(input).await.context("The check code did not match")?;
-
         println!("Successfully established the secure channel.");
+        io::stdout().flush().expect("Unable to write to stdout");
 
         Ok(())
     }

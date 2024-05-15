@@ -4,8 +4,7 @@ use anyhow::{Context, Result};
 use clap::{Args, Parser, Subcommand};
 use futures_util::StreamExt;
 use matrix_sdk::{
-    authentication::qrcode::LoginProgress,
-    crypto::qr_login::QrCodeData,
+    authentication::qrcode::{LoginProgress, QrCodeData},
     oidc::types::{
         iana::oauth::OAuthClientAuthenticationMethod,
         oidc::ApplicationType,

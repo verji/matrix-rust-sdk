@@ -20,9 +20,9 @@ use ruma::api::client::error::ErrorKind;
 use serde::{de::DeserializeOwned, Serialize};
 use tracing::debug;
 use url::Url;
-use vodozemac::secure_channel::{
-    CheckCode, EstablishedSecureChannel as EstablishedEcies, InitialMessage, Message,
-    SecureChannel as Ecies,
+use vodozemac::ecies::{
+    CheckCode, Ecies, EstablishedEcies, InboundCreationResult, InitialMessage, Message,
+    OutboundCreationResult,
 };
 
 use super::{
@@ -107,12 +107,12 @@ impl SecureChannel {
         let message = std::str::from_utf8(&message)?;
         let message = InitialMessage::decode(&message)?;
 
-        let result = self.ecies.create_inbound_channel(&message)?;
-        let message = std::str::from_utf8(&result.message)?;
+        let InboundCreationResult { ecies, message } =
+            self.ecies.establish_inbound_channel(&message)?;
+        let message = std::str::from_utf8(&message)?;
 
         if message == LOGIN_INITIATE_MESSAGE {
-            let mut secure_channel =
-                EstablishedSecureChannel { channel: self.channel, ecies: result.secure_channel };
+            let mut secure_channel = EstablishedSecureChannel { channel: self.channel, ecies };
 
             secure_channel.send(LOGIN_OK_MESSAGE).await?;
 
@@ -225,15 +225,20 @@ impl EstablishedSecureChannel {
         } else {
             let client = HttpClient::new(client, RequestConfig::short_retry());
             let ecies = Ecies::new();
-            let ecies = ecies.create_outbound_channel(qr_code_data.public_key)?;
+
+            let OutboundCreationResult { ecies, message } = ecies.establish_outbound_channel(
+                qr_code_data.public_key,
+                LOGIN_INITIATE_MESSAGE.as_bytes(),
+            )?;
 
             // The initial response will have an empty body, so we can just drop it.
-            let InboundChannelCreationResult { channel, initial_message: _ } =
+            let InboundChannelCreationResult { mut channel, .. } =
                 RendezvousChannel::create_inbound(client, &qr_code_data.rendezvous_url).await?;
 
-            let mut ret = Self { channel, ecies };
+            let encoded_message = message.encode().as_bytes().to_vec();
+            channel.send_data(encoded_message, Some(TEXT_PLAIN_CONTENT_TYPE)).await?;
 
-            ret.send(LOGIN_INITIATE_MESSAGE).await?;
+            let mut ret = Self { channel, ecies };
 
             let response = ret.receive().await?;
 
