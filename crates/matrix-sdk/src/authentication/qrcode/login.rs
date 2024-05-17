@@ -36,13 +36,14 @@ use openidconnect::{
         CoreTokenResponse,
     },
     AdditionalProviderMetadata, AuthType, ClientId, ClientSecret, DeviceAuthorizationUrl,
-    EmptyAdditionalClaims, EndpointMaybeSet, EndpointNotSet, EndpointSet, HttpClientError,
-    IssuerUrl, OAuth2TokenResponse, ProviderMetadata, Scope, StandardErrorResponse,
+    DeviceCodeErrorResponseType, EmptyAdditionalClaims, EndpointMaybeSet, EndpointNotSet,
+    EndpointSet, HttpClientError, IssuerUrl, OAuth2TokenResponse, ProviderMetadata, Scope,
+    StandardErrorResponse,
 };
 use ruma::OwnedDeviceId;
 use vodozemac::{ecies::CheckCode, Curve25519PublicKey};
 
-use super::{DeviceAuhorizationOidcError, SecureChannelError};
+use super::{messages::LoginFailureReason, DeviceAuhorizationOidcError, SecureChannelError};
 use crate::{
     authentication::qrcode::{
         messages::QrAuthMessage, secure_channel::EstablishedSecureChannel, Error,
@@ -168,6 +169,17 @@ pub enum LoginProgress {
     Done,
 }
 
+async fn send_unexpected_message_error(
+    channel: &mut EstablishedSecureChannel,
+) -> Result<(), SecureChannelError> {
+    channel
+        .send_json(QrAuthMessage::LoginFailure {
+            reason: LoginFailureReason::UnexpectedMessageReceived,
+            homeserver: None,
+        })
+        .await
+}
+
 /// Named future for the [`Backups::wait_for_steady_state()`] method.
 #[derive(Debug)]
 pub struct LoginWithQrCode<'a> {
@@ -220,26 +232,55 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             channel.send_json(&message).await?;
 
             // Let's see if the other device agreed to our proposed protocols.
-            // TODO: If the message is m.login.cancel, throw a different error.
-            let message = channel.receive_json().await?;
-            let QrAuthMessage::LoginProtocolAccepted {} = message else {
-                return Err(Error::UnexpectedMessage {
-                    expected: "m.login.protocol_accepted",
-                    received: message,
-                });
-            };
+            match channel.receive_json().await? {
+                QrAuthMessage::LoginProtocolAccepted {} => (),
+                QrAuthMessage::LoginFailure { reason, homeserver } => {
+                    return Err(Error::LoginFailure { reason, homeserver });
+                }
+                message => {
+                    send_unexpected_message_error(&mut channel).await?;
+
+                    return Err(Error::UnexpectedMessage {
+                        expected: "m.login.protocol_accepted",
+                        received: message,
+                    });
+                }
+            }
 
             // The OIDC provider may or may not show this user code to double check that
             // we're talking to the right OIDC provider. Let us display this, so
             // the other device can double check this as well.
-            // TODO: Should we move this to be sooner?
             let user_code = auth_grant_response.user_code();
             self.state
                 .set(LoginProgress::WaitingForToken { user_code: user_code.secret().to_owned() });
 
             // Let's now wait for the access token to be provided to use by the OIDC
             // provider.
-            let session_tokens = oidc_client.wait_for_tokens(&auth_grant_response).await?;
+            let session_tokens = match oidc_client.wait_for_tokens(&auth_grant_response).await {
+                Ok(t) => t,
+                Err(e) => {
+                    // If we received an error, and it's one of the ones we should report to the
+                    // other side, do so now.
+                    if let Some(e) = e.as_request_token_error() {
+                        match e {
+                            DeviceCodeErrorResponseType::AccessDenied => {
+                                channel.send_json(QrAuthMessage::LoginDeclined {}).await?;
+                            }
+                            DeviceCodeErrorResponseType::ExpiredToken => {
+                                channel
+                                    .send_json(QrAuthMessage::LoginFailure {
+                                        reason: LoginFailureReason::AuthorizationExpired,
+                                        homeserver: None,
+                                    })
+                                    .await?;
+                            }
+                            _ => (),
+                        }
+                    }
+
+                    return Err(e.into());
+                }
+            };
             self.client.oidc().set_session_tokens(session_tokens);
 
             // We only received an access token from the OIDC provider, we have no clue who
@@ -267,12 +308,19 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
 
             // Let's wait for the secrets bundle to be sent to us, otherwise we won't be a
             // fully E2EE enabled device.
-            let message = channel.receive_json().await?;
-            let QrAuthMessage::LoginSecrets(bundle) = message else {
-                return Err(Error::UnexpectedMessage {
-                    expected: "m.login.secrets",
-                    received: message,
-                });
+            let bundle = match channel.receive_json().await? {
+                QrAuthMessage::LoginSecrets(bundle) => bundle,
+                QrAuthMessage::LoginFailure { reason, homeserver } => {
+                    return Err(Error::LoginFailure { reason, homeserver });
+                }
+                message => {
+                    send_unexpected_message_error(&mut channel).await?;
+
+                    return Err(Error::UnexpectedMessage {
+                        expected: "m.login.protocol_accepted",
+                        received: message,
+                    });
+                }
             };
 
             // Import the secrets bundle, this will allow us to sign the device keys with
@@ -378,7 +426,8 @@ impl<'a> LoginWithQrCode<'a> {
 
         // We're fetching the provider metadata which will contain the device
         // authorization endpoint. We can use this endpoint to attempt to log in
-        // this new device, though the other, existing device will do that.
+        // this new device, though the other, existing device will do that using the
+        // verification URL.
         let provider_metadata =
             DeviceProviderMetadata::discover_async(issuer_url, &http_client).await?;
         let device_authorization_endpoint =

@@ -16,6 +16,7 @@ use matrix_sdk_base::crypto::types::SecretsBundle;
 use openidconnect::{
     core::CoreDeviceAuthorizationResponse, EndUserVerificationUrl, VerificationUriComplete,
 };
+use ruma::serde::StringEnum;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use url::Url;
 use vodozemac::Curve25519PublicKey;
@@ -24,12 +25,11 @@ use vodozemac::Curve25519PublicKey;
 #[serde(tag = "type")]
 pub enum QrAuthMessage {
     #[serde(rename = "m.login.protocols")]
-    LoginProtocols { protocols: Vec<String>, homeserver: Url },
+    LoginProtocols { protocols: Vec<LoginProtocolType>, homeserver: Url },
     #[serde(rename = "m.login.protocol")]
     LoginProtocol {
         device_authorization_grant: AuthorizationGrant,
-        // TODO: This should be an enum.
-        protocol: String,
+        protocol: LoginProtocolType,
         #[serde(
             deserialize_with = "deserialize_curve_key",
             serialize_with = "serialize_curve_key"
@@ -42,9 +42,39 @@ pub enum QrAuthMessage {
     LoginSuccess {},
     #[serde(rename = "m.login.declined")]
     LoginDeclined {},
+    #[serde(rename = "m.login.failure")]
+    LoginFailure { reason: LoginFailureReason, homeserver: Option<Url> },
     #[serde(rename = "m.login.secrets")]
     LoginSecrets(SecretsBundle),
 }
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, StringEnum)]
+#[ruma_enum(rename_all = "snake_case")]
+pub enum LoginFailureReason {
+    AuthorizationExpired,
+    DeviceAlreadyExists,
+    DeviceNotFound,
+    UnexpectedMessageReceived,
+    UnsupportedProtocol,
+    UserCancelled,
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}
+
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, StringEnum)]
+#[ruma_enum(rename_all = "snake_case")]
+pub enum LoginProtocolType {
+    DeviceAuthorizationGrant,
+    #[doc(hidden)]
+    _Custom(PrivOwnedStr),
+}
+
+// Wrapper around `Box<str>` that cannot be used in a meaningful way outside of
+// this crate. Used for string enums because their `_Custom` variant can't be
+// truly private (only `#[doc(hidden)]`).
+#[doc(hidden)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct PrivOwnedStr(Box<str>);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthorizationGrant {
@@ -60,7 +90,7 @@ impl QrAuthMessage {
         QrAuthMessage::LoginProtocol {
             device_id,
             device_authorization_grant,
-            protocol: "device_authorization_grant".to_owned(),
+            protocol: LoginProtocolType::DeviceAuthorizationGrant,
         }
     }
 }

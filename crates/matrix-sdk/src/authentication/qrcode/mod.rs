@@ -15,18 +15,19 @@
 #![allow(missing_docs)]
 
 use matrix_sdk_base::crypto::SecretImportError;
-use openidconnect::{
+pub use openidconnect::{
     core::CoreErrorResponseType, ConfigurationError, DeviceCodeErrorResponseType, DiscoveryError,
     HttpClientError, RequestTokenError, StandardErrorResponse,
 };
 use thiserror::Error;
+use url::Url;
 pub use vodozemac::ecies::{Error as EciesError, MessageDecodeError};
 
 use crate::{oidc::CrossProcessRefreshLockError, HttpError};
 
 mod grant_login;
 mod login;
-mod messages;
+pub mod messages;
 mod rendezvous_channel;
 mod secure_channel;
 
@@ -34,9 +35,10 @@ pub use grant_login::ExistingAuthGrantDings;
 pub use login::{LoginProgress, LoginWithQrCode};
 pub use matrix_sdk_base::crypto::types::qr_login::QrCodeData;
 
-use self::messages::QrAuthMessage;
+use self::messages::{LoginFailureReason, QrAuthMessage};
 
 #[derive(Debug, Error)]
+#[cfg_attr(feature = "uniffi", derive(uniffi::Error), uniffi(flat_error))]
 pub enum Error {
     #[error(transparent)]
     Oidc(#[from] DeviceAuhorizationOidcError),
@@ -49,6 +51,9 @@ pub enum Error {
 
     #[error(transparent)]
     SecretImport(#[from] SecretImportError),
+
+    #[error("The login failed, reason: {reason}.")]
+    LoginFailure { reason: LoginFailureReason, homeserver: Option<Url> },
 
     #[error("We have received an unexpected message, expected: {expected}, got {received:?}.")]
     UnexpectedMessage { expected: &'static str, received: QrAuthMessage },
@@ -97,6 +102,18 @@ pub enum DeviceAuhorizationOidcError {
 
     #[error(transparent)]
     Discovery(#[from] DiscoveryError<HttpClientError<reqwest::Error>>),
+}
+
+impl DeviceAuhorizationOidcError {
+    pub fn as_request_token_error(&self) -> Option<&DeviceCodeErrorResponseType> {
+        match self {
+            DeviceAuhorizationOidcError::RequestToken(e) => match e {
+                RequestTokenError::ServerResponse(s) => Some(s.error()),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Error)]

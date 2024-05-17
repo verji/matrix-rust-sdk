@@ -19,7 +19,7 @@ use matrix_sdk_base::crypto::types::{qr_login::QrCodeData, SecretsBundle};
 use super::messages::AuthorizationGrant;
 use crate::{
     authentication::qrcode::{
-        messages::QrAuthMessage,
+        messages::{LoginProtocolType, QrAuthMessage},
         secure_channel::{AlmostEstablishedSecureChannel, SecureChannel},
         Error,
     },
@@ -109,7 +109,7 @@ impl ExistingAuthGrantDings {
                 todo!()
             };
 
-            if protocol != "device_authorization_grant" {
+            if protocol != LoginProtocolType::DeviceAuthorizationGrant {
                 todo!()
             }
 

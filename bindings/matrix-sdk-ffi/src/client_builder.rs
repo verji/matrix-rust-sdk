@@ -2,6 +2,9 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
+    authentication::qrcode::{
+        self, messages::LoginFailureReason, DeviceCodeErrorResponseType, Error,
+    },
     crypto::types::qr_login::{LoginQrCodeDecodeError, QrCodeModeData},
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     reqwest::Certificate,
@@ -34,23 +37,112 @@ enum HomeserverConfig {
 
 #[derive(Debug, uniffi::Object)]
 pub struct QrCodeData {
-    inner: matrix_sdk::authentication::qrcode::QrCodeData,
+    inner: qrcode::QrCodeData,
 }
 
 #[uniffi::export]
 impl QrCodeData {
     #[uniffi::constructor]
     pub fn from_bytes(bytes: &[u8]) -> Result<Arc<Self>, QrCodeDecodeError> {
-        Ok(Self { inner: matrix_sdk::authentication::qrcode::QrCodeData::from_bytes(bytes)? }
-            .into())
+        Ok(Self { inner: qrcode::QrCodeData::from_bytes(bytes)? }.into())
     }
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-#[uniffi(flat_error)]
 pub enum QrCodeDecodeError {
     #[error("Error decoding QR code: {0:?}")]
     Crypto(#[from] LoginQrCodeDecodeError),
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum QrLoginError {
+    #[error(transparent)]
+    ClientBuilder(#[from] ClientBuildError),
+    #[error("The homeserver doesn't provide a sliding sync proxy in its configuration.")]
+    SlidingSyncNotAvailable,
+    #[error("Unable to use OIDC as the supplied client metadata is invalid.")]
+    OidcMetadataInvalid,
+    #[error("The per-user directory could not have been created: {reason}")]
+    StorageSetup { reason: String },
+    #[error("The scanned and parsed QR code has an invalid intent, expected the reciprocate intent, got the login intent")]
+    InvalidIntent,
+    #[error(transparent)]
+    LoginError(#[from] Error),
+}
+
+#[derive(Debug, thiserror::Error, uniffi::Error)]
+pub enum HumanQrLoginError {
+    #[error("Linking with this device is not supported.")]
+    LinkingNotSupported,
+    #[error("The sign in was cancelled.")]
+    Cancelled,
+    #[error("The sign in was not completed in the required time.")]
+    Expired,
+    #[error("A secure connection could not have been established between the two device.")]
+    ConnectionInsecure,
+    #[error("The sign in was declined.")]
+    Declined,
+    #[error("An unknown error has happened.")]
+    Unknown,
+    #[error("The QR code we scanned was not valid.")]
+    InvalidQrCode,
+}
+
+impl From<std::io::Error> for QrLoginError {
+    fn from(value: std::io::Error) -> Self {
+        Self::StorageSetup { reason: format!("{value:?}") }
+    }
+}
+
+impl From<QrLoginError> for HumanQrLoginError {
+    fn from(value: QrLoginError) -> Self {
+        match value {
+            QrLoginError::LoginError(e) => e.into(),
+            QrLoginError::InvalidIntent => HumanQrLoginError::InvalidQrCode,
+            QrLoginError::ClientBuilder(_)
+            | QrLoginError::SlidingSyncNotAvailable
+            | QrLoginError::OidcMetadataInvalid
+            | QrLoginError::StorageSetup { .. } => HumanQrLoginError::Unknown,
+        }
+    }
+}
+
+impl From<matrix_sdk::authentication::qrcode::Error> for HumanQrLoginError {
+    fn from(value: matrix_sdk::authentication::qrcode::Error) -> Self {
+        match value {
+            Error::LoginFailure { reason, .. } => match reason {
+                LoginFailureReason::UnsupportedProtocol => HumanQrLoginError::LinkingNotSupported,
+                LoginFailureReason::AuthorizationExpired => HumanQrLoginError::Expired,
+                LoginFailureReason::UserCancelled => HumanQrLoginError::Cancelled,
+                _ => HumanQrLoginError::Unknown,
+            },
+            Error::Oidc(e) => {
+                if let Some(e) = e.as_request_token_error() {
+                    match e {
+                        DeviceCodeErrorResponseType::AccessDenied => HumanQrLoginError::Declined,
+                        DeviceCodeErrorResponseType::ExpiredToken => HumanQrLoginError::Expired,
+                        _ => HumanQrLoginError::Unknown,
+                    }
+                } else {
+                    HumanQrLoginError::Unknown
+                }
+            }
+            Error::SecureChannel(_) => HumanQrLoginError::ConnectionInsecure,
+            Error::UnexpectedMessage { .. }
+            | Error::CrossProcessRefreshLock(_)
+            | Error::DeviceKeyUpload(_)
+            | Error::SessionTokens(_)
+            | Error::UserIdDiscovery(_)
+            | Error::SecretImport(_) => HumanQrLoginError::Unknown,
+        }
+    }
+}
+
+/// Convert the error the [`ClientBuilder::build_with_qr_code()`] method returns
+/// into a more user-friendly error type.
+#[uniffi::export]
+pub fn qr_login_error_to_human_error(error: QrLoginError) -> HumanQrLoginError {
+    error.into()
 }
 
 /// Enum describing the progress of the QR-code login.
@@ -81,8 +173,8 @@ pub trait QrLoginProgressListener: Sync + Send {
     fn on_update(&self, state: QrLoginProgress);
 }
 
-impl From<matrix_sdk::authentication::qrcode::LoginProgress> for QrLoginProgress {
-    fn from(value: matrix_sdk::authentication::qrcode::LoginProgress) -> Self {
+impl From<qrcode::LoginProgress> for QrLoginProgress {
+    fn from(value: qrcode::LoginProgress) -> Self {
         use matrix_sdk::authentication::qrcode::LoginProgress;
         match value {
             LoginProgress::Starting => Self::Starting,
@@ -319,7 +411,7 @@ impl ClientBuilder {
         qr_code_data: &QrCodeData,
         oidc_configuration: &OidcConfiguration,
         progress_listener: Box<dyn QrLoginProgressListener>,
-    ) -> Result<Arc<Client>, ClientBuildError> {
+    ) -> Result<Arc<Client>, QrLoginError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode_data {
             let mut builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
             let uuid = uuid::Uuid::new_v4().to_string();
@@ -332,7 +424,12 @@ impl ClientBuilder {
 
                 tracing::debug!("Setting the Client storage path to {random_dir:?}");
 
-                builder = builder.base_path(random_dir.to_str().unwrap().to_string());
+                builder = builder.base_path(
+                    random_dir
+                        .to_str()
+                        .expect("The base path and the uuid both are valid UTF-8 strings")
+                        .to_string(),
+                );
 
                 Some((base_directory, random_dir))
             } else {
@@ -341,12 +438,12 @@ impl ClientBuilder {
 
             let client = builder.build().await?;
 
-            // TODO: Check for SS support here.
             if client.sliding_sync_proxy().is_none() {
-                todo!()
+                return Err(QrLoginError::SlidingSyncNotAvailable);
             }
 
-            let client_metadata = oidc_configuration.try_into().unwrap();
+            let client_metadata =
+                oidc_configuration.try_into().map_err(|_| QrLoginError::OidcMetadataInvalid)?;
 
             let oidc = client.inner.oidc();
             let login = oidc.login_with_qr_code(&qr_code_data.inner, client_metadata);
@@ -359,25 +456,37 @@ impl ClientBuilder {
                 }
             }));
 
-            login.await.unwrap();
+            if let Err(e) = login.await {
+                if let Some((_, random_dir)) = directories {
+                    if let Err(e) = fs::remove_dir_all(random_dir) {
+                        tracing::warn!(
+                            "Couldn't clean up the random directory after a login failure: {e:?}"
+                        )
+                    }
+                }
+
+                return Err(e.into());
+            }
 
             // Clients want to scope the per-client directory by the user ID, but the user
             // ID is only available once we logged in. So rename the uuid based
             // directory into the user name's directory.
             if let Some((base_directory, random_dir)) = directories {
-                let user_id = client.user_id().unwrap();
+                let user_id = client
+                    .user_id()
+                    .expect("Since the login above succeeded, we should know our user id now.");
                 let user_dir = base_directory.join(sanitize(&user_id));
 
                 tracing::debug!(
                     "Renaming the Client storage path from {random_dir:?} to {user_dir:?}"
                 );
 
-                fs::rename(random_dir, user_dir).unwrap();
+                fs::rename(random_dir, user_dir)?;
             }
 
             Ok(client)
         } else {
-            todo!()
+            Err(QrLoginError::InvalidIntent)
         }
     }
 }
