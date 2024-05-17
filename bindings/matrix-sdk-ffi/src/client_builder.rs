@@ -50,14 +50,14 @@ impl QrCodeData {
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum QrCodeDecodeError {
-    #[error("Error decoding QR code: {0:?}")]
-    Crypto(#[from] LoginQrCodeDecodeError),
+    #[error("Error decoding QR code: {error:?}")]
+    Crypto { #[from] error: LoginQrCodeDecodeError },
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum QrLoginError {
     #[error(transparent)]
-    ClientBuilder(#[from] ClientBuildError),
+    ClientBuilder { #[from] error: ClientBuildError },
     #[error("The homeserver doesn't provide a sliding sync proxy in its configuration.")]
     SlidingSyncNotAvailable,
     #[error("Unable to use OIDC as the supplied client metadata is invalid.")]
@@ -67,7 +67,7 @@ pub enum QrLoginError {
     #[error("The scanned and parsed QR code has an invalid intent, expected the reciprocate intent, got the login intent")]
     InvalidIntent,
     #[error(transparent)]
-    LoginError(#[from] Error),
+    LoginError { #[from] error: Error },
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -97,9 +97,9 @@ impl From<std::io::Error> for QrLoginError {
 impl From<QrLoginError> for HumanQrLoginError {
     fn from(value: QrLoginError) -> Self {
         match value {
-            QrLoginError::LoginError(e) => e.into(),
+            QrLoginError::LoginError { error } => error.into(),
             QrLoginError::InvalidIntent => HumanQrLoginError::InvalidQrCode,
-            QrLoginError::ClientBuilder(_)
+            QrLoginError::ClientBuilder { .. }
             | QrLoginError::SlidingSyncNotAvailable
             | QrLoginError::OidcMetadataInvalid
             | QrLoginError::StorageSetup { .. } => HumanQrLoginError::Unknown,
