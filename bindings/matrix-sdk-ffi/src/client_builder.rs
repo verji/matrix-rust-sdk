@@ -2,9 +2,7 @@ use std::{fs, path::PathBuf, sync::Arc};
 
 use futures_util::StreamExt;
 use matrix_sdk::{
-    authentication::qrcode::{
-        self, messages::LoginFailureReason, DeviceCodeErrorResponseType, Error,
-    },
+    authentication::qrcode::{self, messages::LoginFailureReason, DeviceCodeErrorResponseType},
     crypto::types::qr_login::{LoginQrCodeDecodeError, QrCodeModeData},
     encryption::{BackupDownloadStrategy, EncryptionSettings},
     reqwest::Certificate,
@@ -51,13 +49,19 @@ impl QrCodeData {
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum QrCodeDecodeError {
     #[error("Error decoding QR code: {error:?}")]
-    Crypto { #[from] error: LoginQrCodeDecodeError },
+    Crypto {
+        #[from]
+        error: LoginQrCodeDecodeError,
+    },
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum QrLoginError {
     #[error(transparent)]
-    ClientBuilder { #[from] error: ClientBuildError },
+    ClientBuilder {
+        #[from]
+        error: ClientBuildError,
+    },
     #[error("The homeserver doesn't provide a sliding sync proxy in its configuration.")]
     SlidingSyncNotAvailable,
     #[error("Unable to use OIDC as the supplied client metadata is invalid.")]
@@ -67,7 +71,10 @@ pub enum QrLoginError {
     #[error("The scanned and parsed QR code has an invalid intent, expected the reciprocate intent, got the login intent")]
     InvalidIntent,
     #[error(transparent)]
-    LoginError { #[from] error: Error },
+    LoginError {
+        #[from]
+        error: qrcode::Error,
+    },
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
@@ -108,7 +115,9 @@ impl From<QrLoginError> for HumanQrLoginError {
 }
 
 impl From<matrix_sdk::authentication::qrcode::Error> for HumanQrLoginError {
-    fn from(value: matrix_sdk::authentication::qrcode::Error) -> Self {
+    fn from(value: qrcode::Error) -> Self {
+        use qrcode::Error;
+
         match value {
             Error::LoginFailure { reason, .. } => match reason {
                 LoginFailureReason::UnsupportedProtocol => HumanQrLoginError::LinkingNotSupported,
