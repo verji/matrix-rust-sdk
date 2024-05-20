@@ -46,7 +46,7 @@ use vodozemac::{ecies::CheckCode, Curve25519PublicKey};
 use super::{messages::LoginFailureReason, DeviceAuhorizationOidcError, SecureChannelError};
 use crate::{
     authentication::qrcode::{
-        messages::QrAuthMessage, secure_channel::EstablishedSecureChannel, Error,
+        messages::QrAuthMessage, secure_channel::EstablishedSecureChannel, QRCodeLoginError,
     },
     http_client::HttpClient,
     oidc::OidcSessionTokens,
@@ -198,7 +198,7 @@ impl<'a> LoginWithQrCode<'a> {
 }
 
 impl<'a> IntoFuture for LoginWithQrCode<'a> {
-    type Output = Result<(), Error>;
+    type Output = Result<(), QRCodeLoginError>;
     boxed_into_future!(extra_bounds: 'a);
 
     fn into_future(self) -> Self::IntoFuture {
@@ -235,12 +235,12 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             match channel.receive_json().await? {
                 QrAuthMessage::LoginProtocolAccepted {} => (),
                 QrAuthMessage::LoginFailure { reason, homeserver } => {
-                    return Err(Error::LoginFailure { reason, homeserver });
+                    return Err(QRCodeLoginError::LoginFailure { reason, homeserver });
                 }
                 message => {
                     send_unexpected_message_error(&mut channel).await?;
 
-                    return Err(Error::UnexpectedMessage {
+                    return Err(QRCodeLoginError::UnexpectedMessage {
                         expected: "m.login.protocol_accepted",
                         received: message,
                     });
@@ -288,7 +288,8 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             // TODO: This snippet is almost the same as the Oidc::finish_login_method(), why
             // is that method even a public method and not called as part of the set session
             // tokens method.
-            let whoami_response = self.client.whoami().await.map_err(Error::UserIdDiscovery)?;
+            let whoami_response =
+                self.client.whoami().await.map_err(QRCodeLoginError::UserIdDiscovery)?;
             self.client
                 .set_session_meta(
                     SessionMeta {
@@ -298,7 +299,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
                     Some(account),
                 )
                 .await
-                .map_err(Error::SessionTokens)?;
+                .map_err(QRCodeLoginError::SessionTokens)?;
 
             self.client.oidc().enable_cross_process_lock().await?;
 
@@ -311,12 +312,12 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
             let bundle = match channel.receive_json().await? {
                 QrAuthMessage::LoginSecrets(bundle) => bundle,
                 QrAuthMessage::LoginFailure { reason, homeserver } => {
-                    return Err(Error::LoginFailure { reason, homeserver });
+                    return Err(QRCodeLoginError::LoginFailure { reason, homeserver });
                 }
                 message => {
                     send_unexpected_message_error(&mut channel).await?;
 
-                    return Err(Error::UnexpectedMessage {
+                    return Err(QRCodeLoginError::UnexpectedMessage {
                         expected: "m.login.protocol_accepted",
                         received: message,
                     });
@@ -333,7 +334,7 @@ impl<'a> IntoFuture for LoginWithQrCode<'a> {
                 .encryption()
                 .ensure_device_keys_upload()
                 .await
-                .map_err(Error::DeviceKeyUpload)?;
+                .map_err(QRCodeLoginError::DeviceKeyUpload)?;
 
             // Run and wait for the E2EE initialization tasks, this will ensure that we
             // ourselves see us as verified and the recovery/backup states will

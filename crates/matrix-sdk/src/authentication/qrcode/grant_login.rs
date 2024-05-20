@@ -21,7 +21,7 @@ use crate::{
     authentication::qrcode::{
         messages::{LoginProtocolType, QrAuthMessage},
         secure_channel::{AlmostEstablishedSecureChannel, SecureChannel},
-        Error,
+        QRCodeLoginError,
     },
     Client,
 };
@@ -83,7 +83,7 @@ impl ExistingAuthGrantDings {
         &self.qr_code_data
     }
 
-    pub async fn wait_for_scan(&mut self) -> Result<(), Error> {
+    pub async fn wait_for_scan(&mut self) -> Result<(), QRCodeLoginError> {
         let channel = std::mem::take(&mut self.channel);
 
         if let Channel::Insecure(channel) = channel {
@@ -95,7 +95,7 @@ impl ExistingAuthGrantDings {
         Ok(())
     }
 
-    pub async fn confirm_check_code(&mut self, check_code: u8) -> Result<(), Error> {
+    pub async fn confirm_check_code(&mut self, check_code: u8) -> Result<(), QRCodeLoginError> {
         let channel = std::mem::take(&mut self.channel);
 
         if let Channel::Almost(channel) = channel {

@@ -73,7 +73,7 @@ pub enum QrLoginError {
     #[error(transparent)]
     LoginError {
         #[from]
-        error: qrcode::Error,
+        error: qrcode::QRCodeLoginError,
     },
 }
 
@@ -114,18 +114,18 @@ impl From<QrLoginError> for HumanQrLoginError {
     }
 }
 
-impl From<matrix_sdk::authentication::qrcode::Error> for HumanQrLoginError {
-    fn from(value: qrcode::Error) -> Self {
-        use qrcode::Error;
+impl From<matrix_sdk::authentication::qrcode::QRCodeLoginError> for HumanQrLoginError {
+    fn from(value: qrcode::QRCodeLoginError) -> Self {
+        use qrcode::QRCodeLoginError;
 
         match value {
-            Error::LoginFailure { reason, .. } => match reason {
+            QRCodeLoginError::LoginFailure { reason, .. } => match reason {
                 LoginFailureReason::UnsupportedProtocol => HumanQrLoginError::LinkingNotSupported,
                 LoginFailureReason::AuthorizationExpired => HumanQrLoginError::Expired,
                 LoginFailureReason::UserCancelled => HumanQrLoginError::Cancelled,
                 _ => HumanQrLoginError::Unknown,
             },
-            Error::Oidc(e) => {
+            QRCodeLoginError::Oidc(e) => {
                 if let Some(e) = e.as_request_token_error() {
                     match e {
                         DeviceCodeErrorResponseType::AccessDenied => HumanQrLoginError::Declined,
@@ -136,13 +136,13 @@ impl From<matrix_sdk::authentication::qrcode::Error> for HumanQrLoginError {
                     HumanQrLoginError::Unknown
                 }
             }
-            Error::SecureChannel(_) => HumanQrLoginError::ConnectionInsecure,
-            Error::UnexpectedMessage { .. }
-            | Error::CrossProcessRefreshLock(_)
-            | Error::DeviceKeyUpload(_)
-            | Error::SessionTokens(_)
-            | Error::UserIdDiscovery(_)
-            | Error::SecretImport(_) => HumanQrLoginError::Unknown,
+            QRCodeLoginError::SecureChannel(_) => HumanQrLoginError::ConnectionInsecure,
+            QRCodeLoginError::UnexpectedMessage { .. }
+            | QRCodeLoginError::CrossProcessRefreshLock(_)
+            | QRCodeLoginError::DeviceKeyUpload(_)
+            | QRCodeLoginError::SessionTokens(_)
+            | QRCodeLoginError::UserIdDiscovery(_)
+            | QRCodeLoginError::SecretImport(_) => HumanQrLoginError::Unknown,
         }
     }
 }

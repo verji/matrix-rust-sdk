@@ -39,7 +39,7 @@ use self::messages::{LoginFailureReason, QrAuthMessage};
 
 #[derive(Debug, Error)]
 #[cfg_attr(feature = "uniffi", derive(uniffi::Error), uniffi(flat_error))]
-pub enum Error {
+pub enum QRCodeLoginError {
     #[error(transparent)]
     Oidc(#[from] DeviceAuhorizationOidcError),
 
