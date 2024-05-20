@@ -31,7 +31,7 @@ use axum::{
 use futures_util::StreamExt;
 use matrix_sdk::{
     config::SyncSettings,
-    encryption::EncryptionSettings,
+    encryption::{recovery::RecoveryState, EncryptionSettings},
     oidc::{
         requests::account_management::AccountManagementActionFull,
         types::{
@@ -49,10 +49,7 @@ use matrix_sdk::{
     Client, ClientBuildError, Result, RoomState,
 };
 use matrix_sdk_ui::sync_service::SyncService;
-use qrcode::{
-    render::unicode::{self, Dense1x2},
-    QrCode,
-};
+use qrcode::{render::unicode::Dense1x2, QrCode};
 use rand::{distributions::Alphanumeric, thread_rng, Rng};
 use serde::{Deserialize, Serialize};
 use tokio::{fs, io::AsyncBufReadExt as _, net::TcpListener, sync::oneshot};
@@ -102,6 +99,7 @@ fn help() {
     println!("  watch [sliding?]       Watch new incoming messages until an error occurs");
     println!("  authorize [scope…]     Authorize the given scope");
     println!("  refresh                Refresh the access token");
+    println!("  recover                Recover the E2EE secrets from secret storage");
     println!("  logout                 Log out of this account");
     println!("  exit                   Exit this program");
     println!("  help                   Show this message\n");
@@ -375,6 +373,9 @@ impl OidcCli {
                 Some("help") => {
                     help();
                 }
+                Some("recover") => {
+                    self.recover().await?;
+                }
                 Some("qrcode") => {
                     self.qrcode().await?;
                 }
@@ -402,8 +403,8 @@ impl OidcCli {
 
         let image = qr_code
             .render::<Dense1x2>()
-            .dark_color(unicode::Dense1x2::Light)
-            .light_color(unicode::Dense1x2::Dark)
+            .dark_color(Dense1x2::Light)
+            .light_color(Dense1x2::Dark)
             .build();
 
         println!("{image}");
@@ -417,7 +418,7 @@ impl OidcCli {
         println!("Please enter the check code the other device is displaying: ");
 
         let mut input = String::new();
-        std::io::stdin().read_line(&mut input).expect("error: unable to read user input");
+        io::stdin().read_line(&mut input).expect("error: unable to read user input");
 
         let input = input.trim().to_lowercase();
 
@@ -426,6 +427,28 @@ impl OidcCli {
         dings.confirm_check_code(input).await.context("The check code did not match")?;
         println!("Successfully established the secure channel.");
         io::stdout().flush().expect("Unable to write to stdout");
+
+        Ok(())
+    }
+
+    async fn recover(&self) -> anyhow::Result<()> {
+        let recovery = self.client.encryption().recovery();
+
+        println!("Please enter your recovery key:");
+
+        let mut input = String::new();
+        io::stdin().read_line(&mut input).expect("error: unable to read user input");
+
+        let input = input.trim();
+
+        recovery.recover(input).await?;
+
+        match recovery.state() {
+            RecoveryState::Enabled => println!("Successfully recovered all the E2EE secrets."),
+            RecoveryState::Disabled => println!("Error recovering, recovery is disabled."),
+            RecoveryState::Incomplete => println!("Couldn't recover all E2EE secrets."),
+            _ => unreachable!("We should know our recovery state by now"),
+        }
 
         Ok(())
     }
