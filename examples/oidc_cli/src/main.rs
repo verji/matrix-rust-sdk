@@ -398,9 +398,7 @@ impl OidcCli {
         let mut dings = client.oidc().grant_login_with_qr_code().await?;
 
         let data = dings.qr_code_data();
-        let qr_code =
-            QrCode::with_version(data.to_bytes(), qrcode::Version::Normal(8), qrcode::EcLevel::L)
-                .context("Couldn't create a QR code")?;
+        let qr_code = QrCode::new(data.to_bytes()).context("Failed to render the QR code")?;
         let data_base64 = data.to_base64();
 
         let image = qr_code
