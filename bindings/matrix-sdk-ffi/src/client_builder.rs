@@ -56,28 +56,6 @@ pub enum QrCodeDecodeError {
 }
 
 #[derive(Debug, thiserror::Error, uniffi::Error)]
-pub enum QrLoginError {
-    #[error(transparent)]
-    ClientBuilder {
-        #[from]
-        error: ClientBuildError,
-    },
-    #[error("The homeserver doesn't provide a sliding sync proxy in its configuration.")]
-    SlidingSyncNotAvailable,
-    #[error("Unable to use OIDC as the supplied client metadata is invalid.")]
-    OidcMetadataInvalid,
-    #[error("The per-user directory could not have been created: {reason}")]
-    StorageSetup { reason: String },
-    #[error("The scanned and parsed QR code has an invalid intent, expected the reciprocate intent, got the login intent")]
-    InvalidIntent,
-    #[error(transparent)]
-    LoginError {
-        #[from]
-        error: qrcode::QRCodeLoginError,
-    },
-}
-
-#[derive(Debug, thiserror::Error, uniffi::Error)]
 pub enum HumanQrLoginError {
     #[error("Linking with this device is not supported.")]
     LinkingNotSupported,
@@ -93,25 +71,10 @@ pub enum HumanQrLoginError {
     Unknown,
     #[error("The QR code we scanned was not valid.")]
     InvalidQrCode,
-}
-
-impl From<std::io::Error> for QrLoginError {
-    fn from(value: std::io::Error) -> Self {
-        Self::StorageSetup { reason: format!("{value:?}") }
-    }
-}
-
-impl From<QrLoginError> for HumanQrLoginError {
-    fn from(value: QrLoginError) -> Self {
-        match value {
-            QrLoginError::LoginError { error } => error.into(),
-            QrLoginError::InvalidIntent => HumanQrLoginError::InvalidQrCode,
-            QrLoginError::ClientBuilder { .. }
-            | QrLoginError::SlidingSyncNotAvailable
-            | QrLoginError::OidcMetadataInvalid
-            | QrLoginError::StorageSetup { .. } => HumanQrLoginError::Unknown,
-        }
-    }
+    #[error("The homeserver doesn't provide a sliding sync proxy in its configuration.")]
+    SlidingSyncNotAvailable,
+    #[error("Unable to use OIDC as the supplied client metadata is invalid.")]
+    OidcMetadataInvalid,
 }
 
 impl From<matrix_sdk::authentication::qrcode::QRCodeLoginError> for HumanQrLoginError {
@@ -145,13 +108,6 @@ impl From<matrix_sdk::authentication::qrcode::QRCodeLoginError> for HumanQrLogin
             | QRCodeLoginError::SecretImport(_) => HumanQrLoginError::Unknown,
         }
     }
-}
-
-/// Convert the error the [`ClientBuilder::build_with_qr_code()`] method returns
-/// into a more user-friendly error type.
-#[uniffi::export]
-pub fn qr_login_error_to_human_error(error: QrLoginError) -> HumanQrLoginError {
-    error.into()
 }
 
 /// Enum describing the progress of the QR-code login.
@@ -420,7 +376,7 @@ impl ClientBuilder {
         qr_code_data: &QrCodeData,
         oidc_configuration: &OidcConfiguration,
         progress_listener: Box<dyn QrLoginProgressListener>,
-    ) -> Result<Arc<Client>, QrLoginError> {
+    ) -> Result<Arc<Client>, HumanQrLoginError> {
         if let QrCodeModeData::Reciprocate { homeserver_url } = &qr_code_data.inner.mode_data {
             let mut builder = self.server_name_or_homeserver_url(homeserver_url.to_string());
             let uuid = uuid::Uuid::new_v4().to_string();
@@ -445,14 +401,18 @@ impl ClientBuilder {
                 None
             };
 
-            let client = builder.build().await?;
+            let client = builder.build().await.map_err(|e| {
+                tracing::error!("Couldn't build the client {e:?}");
+                HumanQrLoginError::Unknown
+            })?;
 
             if client.sliding_sync_proxy().is_none() {
-                return Err(QrLoginError::SlidingSyncNotAvailable);
+                return Err(HumanQrLoginError::SlidingSyncNotAvailable);
             }
 
-            let client_metadata =
-                oidc_configuration.try_into().map_err(|_| QrLoginError::OidcMetadataInvalid)?;
+            let client_metadata = oidc_configuration
+                .try_into()
+                .map_err(|_| HumanQrLoginError::OidcMetadataInvalid)?;
 
             let oidc = client.inner.oidc();
             let login = oidc.login_with_qr_code(&qr_code_data.inner, client_metadata);
@@ -490,12 +450,15 @@ impl ClientBuilder {
                     "Renaming the Client storage path from {random_dir:?} to {user_dir:?}"
                 );
 
-                fs::rename(random_dir, user_dir)?;
+                fs::rename(random_dir, user_dir).map_err(|e| {
+                    tracing::error!("Couldn't rename the per-user storage directory: {e:?}");
+                    HumanQrLoginError::Unknown
+                })?;
             }
 
             Ok(client)
         } else {
-            Err(QrLoginError::InvalidIntent)
+            Err(HumanQrLoginError::InvalidQrCode)
         }
     }
 }
