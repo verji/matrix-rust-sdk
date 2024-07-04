@@ -292,10 +292,15 @@ impl MemberEvent {
 
     /// The name that should be displayed for this member event.
     ///
-    /// It there is no `displayname` in the event's content, the localpart or
-    /// the user ID is returned.
+    /// It there is no `displayname` in the event's content, we try to use the
+    /// previous (if available) content's displayname; otherwise, the localpart
+    /// of the user ID is returned.
     pub fn display_name(&self) -> &str {
         self.original_content()
+            .or_else(|| match self {
+                Self::Sync(e) => e.as_original().and_then(|e| e.prev_content()),
+                Self::Stripped(_) => None,
+            })
             .and_then(|c| c.displayname.as_deref())
             .unwrap_or_else(|| self.user_id().localpart())
     }
