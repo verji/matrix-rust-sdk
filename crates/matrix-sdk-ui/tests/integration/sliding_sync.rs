@@ -39,7 +39,7 @@ pub(crate) async fn check_requests(server: MockServer, expected_requests: &[serd
 pub(crate) struct SlidingSyncMatcher;
 
 #[derive(serde::Deserialize)]
-pub(crate) struct PartialSlidingSyncRequest {
+pub struct PartialSlidingSyncRequest {
     pub txn_id: Option<String>,
     #[serde(default)]
     pub conn_id: Option<String>,

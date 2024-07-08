@@ -431,7 +431,7 @@ pub enum SyncIndicator {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod tests {
     use std::future::ready;
 
     use futures_util::{pin_mut, StreamExt};
@@ -477,7 +477,7 @@ mod tests {
         RoomListService::new(client).await
     }
 
-    struct SlidingSyncMatcher;
+    pub struct SlidingSyncMatcher;
 
     impl Match for SlidingSyncMatcher {
         fn matches(&self, request: &Request) -> bool {

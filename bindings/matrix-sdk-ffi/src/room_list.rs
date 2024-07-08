@@ -1,7 +1,10 @@
 use std::{fmt::Debug, mem::MaybeUninit, ptr::addr_of_mut, sync::Arc, time::Duration};
-
+use std::iter::Map;
 use eyeball_im::VectorDiff;
 use futures_util::{pin_mut, StreamExt, TryFutureExt};
+use ruma::api::MatrixVersion;
+use ruma::{device_id, user_id};
+use serde_json::{json, Value};
 use matrix_sdk::ruma::{
     api::client::sync::sync_events::{
         v4::RoomSubscription as RumaRoomSubscription,
@@ -20,7 +23,12 @@ use matrix_sdk_ui::{
     unable_to_decrypt_hook::UtdHookManager,
 };
 use tokio::sync::RwLock;
-
+use tracing::log::warn;
+use url::Url;
+use wiremock::{Match, Mock, Request, ResponseTemplate};
+use wiremock::http::Method;
+use matrix_sdk::{Client, SessionMeta};
+use matrix_sdk::matrix_auth::{MatrixSession, MatrixSessionTokens};
 use crate::{
     error::ClientError,
     room::Room,
@@ -68,6 +76,15 @@ impl From<matrix_sdk_ui::room_list_service::Error> for RoomListError {
             }
             EventCache(error) => Self::EventCache { error: error.to_string() },
         }
+    }
+}
+
+pub struct SlidingSyncMatcher;
+
+impl Match for SlidingSyncMatcher {
+    fn matches(&self, request: &wiremock::Request) -> bool {
+        request.url.path() == "/_matrix/client/unstable/org.matrix.msc3575/sync"
+            && request.method == Method::POST
     }
 }
 
@@ -288,6 +305,13 @@ impl RoomList {
     fn room(&self, room_id: String) -> Result<Arc<RoomListItem>, RoomListError> {
         self.room_list_service.room(room_id)
     }
+}
+
+#[derive(serde::Deserialize)]
+pub struct PartialSlidingSyncRequest {
+    pub txn_id: Option<String>,
+    #[serde(default)]
+    pub conn_id: Option<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -721,4 +745,133 @@ impl From<RumaUnreadNotificationsCount> for UnreadNotificationsCount {
                 .unwrap_or_default(),
         }
     }
+}
+
+#[uniffi::export(async_runtime = "tokio")]
+async fn mocked_entries() -> Result<Vec<RoomListEntriesUpdate>, RoomListError> {
+    // logged_in_client_with_server()
+    let server = wiremock::MockServer::start().await;
+    let homeserver = Some(server.uri()).map(|u| Url::try_from(u.as_str()).unwrap() ).unwrap_or_else(|| Url::try_from("http://localhost:1234").unwrap());
+    let client = Client::builder().homeserver_url(homeserver).server_versions([MatrixVersion::V1_0]).build().await
+        .unwrap();
+
+    client
+        .matrix_auth()
+        .restore_session(MatrixSession {
+            meta: SessionMeta {
+                user_id: user_id!("@example:localhost").to_owned(),
+                device_id: device_id!("DEVICEID").to_owned(),
+            },
+            tokens: MatrixSessionTokens { access_token: "1234".to_owned(), refresh_token: None },
+        })
+        .await
+        .unwrap();
+
+    // Create a new `RoomListService`.
+    let room_list_service = matrix_sdk_ui::room_list_service::RoomListService::new(client.clone()).await?;
+
+    // Get the `RoomListService` sync stream.
+    let room_list_stream = room_list_service.sync();
+    pin_mut!(room_list_stream);
+
+    // Get the `RoomList` itself with a default filter.
+    let room_list = room_list_service
+        .all_rooms()
+        .await
+        .expect("Failed to fetch the `all_rooms` room list");
+
+    let (room_list_entries, room_list_entries_controller) = room_list
+        .entries_with_dynamic_adapters(100, client.roominfo_update_receiver());
+    pin_mut!(room_list_entries);
+    room_list_entries_controller.set_filter(Box::new(new_filter_non_left()));
+    room_list_entries.next().await;
+
+    // “Send” (mocked) and receive rooms.
+    {
+        const ROOMS_BATCH_SIZE: u64 = 100;
+        let maximum_number_of_rooms = 10000;
+        let mut number_of_sent_rooms = 0;
+        let mut room_nth = 0;
+
+        while number_of_sent_rooms < maximum_number_of_rooms {
+            let number_of_rooms_to_send = u64::max(
+                number_of_sent_rooms + ROOMS_BATCH_SIZE,
+                maximum_number_of_rooms,
+            ) - number_of_sent_rooms;
+
+            number_of_sent_rooms += number_of_rooms_to_send;
+
+            let rooms_as_json = Value::Object(
+                (0..number_of_rooms_to_send)
+                    .into_iter()
+                    .map(|_| {
+                        let room_id = format!("!r{room_nth}:matrix.org");
+
+                        let room = json!({
+                                            // The recency timestamp is different, so that it triggers a re-ordering of the
+                                            // room list every time, just to stress the APIs.
+                                            "timestamp": room_nth % 10,
+                                            // One state event to activate the associated code path.
+                                            "required_state": [
+                                                {
+                                                    "content": {
+                                                        "name": format!("Room #{room_nth}"),
+                                                    },
+                                                    "event_id": format!("$s{room_nth}"),
+                                                    "origin_server_ts": 1,
+                                                    "sender": "@example:matrix.org",
+                                                    "state_key": "",
+                                                    "type": "m.room.name"
+                                                },
+                                            ],
+                                            // One room event to active the associated code path.
+                                            "timeline": [
+                                                {
+                                                    "event_id": format!("$t{room_nth}"),
+                                                    "sender": "@example:matrix.org",
+                                                    "type": "m.room.message",
+                                                    "content": {
+                                                        "body": "foo",
+                                                        "msgtype": "m.text",
+                                                    },
+                                                    "origin_server_ts": 1,
+                                                }
+                                            ],
+                                        });
+
+                        room_nth += 1;
+
+                        (room_id, room)
+                    })
+                    .collect::<serde_json::Map<String, serde_json::Value>>(),
+            );
+
+            // Mock the response from the server.
+            let _mock_guard = Mock::given(SlidingSyncMatcher)
+                .respond_with(move |request: &Request| {
+                    let partial_request: PartialSlidingSyncRequest =
+                        request.body_json().unwrap();
+
+                    ResponseTemplate::new(200).set_body_json(json!({
+                                        "txn_id": partial_request.txn_id,
+                                        "pos": room_nth.to_string(),
+                                        "rooms": rooms_as_json,
+                                    }))
+                })
+                .mount_as_scoped(&server)
+                .await;
+
+            // Sync the room list service.
+            assert!(
+                room_list_stream.next().await.is_some(),
+                "`room_list_stream` has stopped"
+            );
+        }
+    }
+
+    let ret: Vec<RoomListEntriesUpdate> = room_list_entries.next().await.unwrap()
+        .into_iter()
+        .map(|diff| RoomListEntriesUpdate::from(diff, None))
+        .collect();
+    Ok(ret)
 }
