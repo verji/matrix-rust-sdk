@@ -7,7 +7,9 @@ use assert_matches::assert_matches;
 use eyeball_im::VectorDiff;
 use futures_util::{pin_mut, FutureExt, StreamExt};
 use matrix_sdk::{test_utils::logged_in_client_with_server, Client};
-use matrix_sdk_base::sync::UnreadNotificationsCount;
+use matrix_sdk_base::{
+    sliding_sync::http::request::RoomSubscription, sync::UnreadNotificationsCount,
+};
 use matrix_sdk_test::async_test;
 use matrix_sdk_ui::{
     room_list_service::{
@@ -18,7 +20,6 @@ use matrix_sdk_ui::{
     RoomListService,
 };
 use ruma::{
-    api::client::sync::sync_events::v4::RoomSubscription,
     assign, event_id,
     events::{room::message::RoomMessageEventContent, StateEventType},
     mxc_uri, room_id, uint,
@@ -83,7 +84,6 @@ macro_rules! sync_then_assert_request_and_fake_response {
                 respond with = $( ( code $code ) )? { $( $response_json )* },
                 $( after delay = $response_delay, )?
             };
-
             $( assert_matches!(state.next().now_or_never(), Some(Some($post_state)), "post state"); )?
 
             next
@@ -331,15 +331,8 @@ async fn test_sync_all_states() -> Result<(), Error> {
                     ],
                     "include_heroes": true,
                     "filters": {
-                        "is_tombstoned": false,
                         "not_room_types": ["m.space"],
                     },
-                    "bump_event_types": [
-                        "m.room.message",
-                        "m.room.encrypted",
-                        "m.sticker",
-                    ],
-                    "sort": ["by_recency", "by_name"],
                     "timeline_limit": 1,
                 },
             },
@@ -1292,7 +1285,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
             "rooms": {
                 "!r0:bar.org": {
                     "initial": true,
-                    "timestamp": 1,
+                    "bump_stamp": 1,
                     "required_state": [
                         {
                             "content": {
@@ -1346,7 +1339,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
             "rooms": {
                 "!r1:bar.org": {
                     "initial": true,
-                    "timestamp": 2,
+                    "bump_stamp": 2,
                     "required_state": [
                         {
                             "content": {
@@ -1362,7 +1355,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
                 },
                 "!r2:bar.org": {
                     "initial": true,
-                    "timestamp": 3,
+                    "bump_stamp": 3,
                     "required_state": [
                         {
                             "content": {
@@ -1378,7 +1371,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
                 },
                 "!r3:bar.org": {
                     "initial": true,
-                    "timestamp": 4,
+                    "bump_stamp": 4,
                     "required_state": [
                         {
                             "content": {
@@ -1394,7 +1387,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
                 },
                 "!r4:bar.org": {
                     "initial": true,
-                    "timestamp": 5,
+                    "bump_stamp": 5,
                     "required_state": [
                         {
                             "content": {
@@ -1442,7 +1435,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
             "rooms": {
                 "!r5:bar.org": {
                     "initial": true,
-                    "timestamp": 6,
+                    "bump_stamp": 6,
                     "required_state": [
                         {
                             "content": {
@@ -1458,7 +1451,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
                 },
                 "!r6:bar.org": {
                     "initial": true,
-                    "timestamp": 7,
+                    "bump_stamp": 7,
                     "required_state": [
                         {
                             "content": {
@@ -1474,7 +1467,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
                 },
                 "!r7:bar.org": {
                     "initial": true,
-                    "timestamp": 8,
+                    "bump_stamp": 8,
                     "required_state": [
                         {
                             "content": {
@@ -1595,7 +1588,7 @@ async fn test_dynamic_entries_stream() -> Result<(), Error> {
             "rooms": {
                 "!r0:bar.org": {
                     "initial": true,
-                    "timestamp": 9,
+                    "bump_stamp": 9,
                     "required_state": [],
                 },
             },
@@ -1665,7 +1658,7 @@ async fn test_room_sorting() -> Result<(), Error> {
             "rooms": {
                 "!r0:bar.org": {
                     "initial": true,
-                    "timestamp": 3,
+                    "bump_stamp": 3,
                     "required_state": [
                         {
                             "content": {
@@ -1681,7 +1674,7 @@ async fn test_room_sorting() -> Result<(), Error> {
                 },
                 "!r1:bar.org": {
                     "initial": true,
-                    "timestamp": 3,
+                    "bump_stamp": 3,
                     "required_state": [
                         {
                             "content": {
@@ -1697,15 +1690,15 @@ async fn test_room_sorting() -> Result<(), Error> {
                 },
                 "!r2:bar.org": {
                     "initial": true,
-                    "timestamp": 1,
+                    "bump_stamp": 1,
                 },
                 "!r3:bar.org": {
                     "initial": true,
-                    "timestamp": 4,
+                    "bump_stamp": 4,
                 },
                 "!r4:bar.org": {
                     "initial": true,
-                    "timestamp": 5,
+                    "bump_stamp": 5,
                 },
             },
         },
@@ -1762,13 +1755,13 @@ async fn test_room_sorting() -> Result<(), Error> {
             },
             "rooms": {
                 "!r0:bar.org": {
-                    "timestamp": 7,
+                    "bump_stamp": 7,
                 },
                 "!r1:bar.org": {
-                    "timestamp": 6,
+                    "bump_stamp": 6,
                 },
                 "!r2:bar.org": {
-                    "timestamp": 9,
+                    "bump_stamp": 9,
                 },
             },
         },
@@ -1848,10 +1841,10 @@ async fn test_room_sorting() -> Result<(), Error> {
             "rooms": {
                 "!r6:bar.org": {
                     "initial": true,
-                    "timestamp": 8,
+                    "bump_stamp": 8,
                 },
                 "!r3:bar.org": {
-                    "timestamp": 10,
+                    "bump_stamp": 10,
                 },
             },
         },
@@ -1913,7 +1906,7 @@ async fn test_room_sorting() -> Result<(), Error> {
             },
             "rooms": {
                 "!r3:bar.org": {
-                    "timestamp": 11,
+                    "bump_stamp": 11,
                 },
             },
         },
@@ -2135,28 +2128,6 @@ async fn test_room_subscription() -> Result<(), Error> {
         },
         respond with = {
             "pos": "1",
-            "lists": {},
-            "rooms": {},
-        },
-    };
-
-    // Unsubscribe.
-
-    room1.unsubscribe();
-    room_list.room(room_id_2)?.unsubscribe(); // unsubscribe from a room that has no subscription.
-
-    sync_then_assert_request_and_fake_response! {
-        [server, room_list, sync]
-        assert request >= {
-            "lists": {
-                ALL_ROOMS: {
-                    "ranges": [[0, 2]],
-                },
-            },
-            "unsubscribe_rooms": [room_id_1, /* `room_id_2` is absent */],
-        },
-        respond with = {
-            "pos": "2",
             "lists": {},
             "rooms": {},
         },

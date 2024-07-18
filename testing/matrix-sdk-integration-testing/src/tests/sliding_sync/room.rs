@@ -16,9 +16,6 @@ use matrix_sdk::{
         api::client::{
             receipt::create_receipt::v3::ReceiptType,
             room::create_room::v3::{Request as CreateRoomRequest, RoomPreset},
-            sync::sync_events::v4::{
-                AccountDataConfig, E2EEConfig, ReceiptsConfig, ToDeviceConfig,
-            },
         },
         assign,
         events::{
@@ -36,6 +33,7 @@ use matrix_sdk::{
     },
     Client, RoomInfo, RoomMemberships, RoomState, SlidingSyncList, SlidingSyncMode,
 };
+use matrix_sdk_base::sliding_sync::http;
 use matrix_sdk_ui::{
     room_list_service::filters::new_filter_all, sync_service::SyncService, timeline::RoomExt,
     RoomListService,
@@ -273,8 +271,13 @@ async fn test_joined_user_can_create_push_context_with_room_list_service() -> Re
     let sliding_sync_url = alice.sliding_sync_proxy();
     let alice_id = alice.user_id().unwrap().localpart().to_owned();
 
-    let alice = Client::new(hs).await?;
-    alice.set_sliding_sync_proxy(sliding_sync_url);
+    let alice = Client::builder()
+        .homeserver_url(hs)
+        .simplified_sliding_sync(false)
+        .sliding_sync_proxy(sliding_sync_url.unwrap())
+        .build()
+        .await
+        .unwrap();
     alice.matrix_auth().login_username(&alice_id, &alice_id).await?;
 
     let room_list_service = Arc::new(RoomListService::new(alice.clone()).await?);
@@ -374,12 +377,16 @@ async fn test_room_notification_count() -> Result<()> {
     spawn({
         let sync = alice
             .sliding_sync("main")?
-            .with_receipt_extension(assign!(ReceiptsConfig::default(), { enabled: Some(true) }))
-            .with_account_data_extension(
-                assign!(AccountDataConfig::default(), { enabled: Some(true) }),
+            .with_receipt_extension(
+                assign!(http::request::Receipts::default(), { enabled: Some(true) }),
             )
-            .with_e2ee_extension(assign!(E2EEConfig::default(), { enabled: Some(true) }))
-            .with_to_device_extension(assign!(ToDeviceConfig::default(), { enabled: Some(true) }))
+            .with_account_data_extension(
+                assign!(http::request::AccountData::default(), { enabled: Some(true) }),
+            )
+            .with_e2ee_extension(assign!(http::request::E2EE::default(), { enabled: Some(true) }))
+            .with_to_device_extension(
+                assign!(http::request::ToDevice::default(), { enabled: Some(true) }),
+            )
             .add_list(
                 SlidingSyncList::builder("all")
                     .sync_mode(SlidingSyncMode::new_selective().add_range(0..=20))
