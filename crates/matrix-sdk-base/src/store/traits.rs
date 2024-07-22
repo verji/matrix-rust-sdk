@@ -456,12 +456,14 @@ pub trait StateStore: AsyncTraitDeps {
     async fn load_rooms_with_unsent_events(&self) -> Result<Vec<OwnedRoomId>, Self::Error>;
 
     /// Add a new entry to the list of dependent send queue event for an event.
+    ///
+    /// Returns the ID for the newly created event.
     async fn save_dependent_send_queue_event(
         &self,
         room_id: &RoomId,
         transaction_id: &TransactionId,
         content: DependentQueuedEventKind,
-    ) -> Result<(), Self::Error>;
+    ) -> Result<usize, Self::Error>;
 
     /// Update a set of dependent send queue events with an event id,
     /// effectively marking them as ready.
@@ -769,7 +771,7 @@ impl<T: StateStore> StateStore for EraseStateStoreError<T> {
         room_id: &RoomId,
         transaction_id: &TransactionId,
         content: DependentQueuedEventKind,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<usize, Self::Error> {
         self.0
             .save_dependent_send_queue_event(room_id, transaction_id, content)
             .await

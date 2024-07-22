@@ -1498,7 +1498,8 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert!(self.list_dependent_send_queue_events(room_id).await.unwrap().is_empty());
 
         // Save a redaction for that event.
-        self.save_dependent_send_queue_event(room_id, &txn0, DependentQueuedEventKind::Redact)
+        let inserted_dependent_id = self
+            .save_dependent_send_queue_event(room_id, &txn0, DependentQueuedEventKind::Redact)
             .await
             .unwrap();
 
@@ -1507,6 +1508,7 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert_eq!(dependents.len(), 1);
         assert_eq!(dependents[0].transaction_id, txn0);
         assert!(dependents[0].event_id.is_none());
+        assert_eq!(dependents[0].id, inserted_dependent_id);
         assert_matches!(dependents[0].kind, DependentQueuedEventKind::Redact);
 
         // Update the event id.
@@ -1520,6 +1522,7 @@ impl StateStoreIntegrationTests for DynStateStore {
         assert_eq!(dependents.len(), 1);
         assert_eq!(dependents[0].transaction_id, txn0);
         assert_eq!(dependents[0].event_id.as_ref(), Some(&event_id));
+        assert_eq!(dependents[0].id, inserted_dependent_id);
         assert_matches!(dependents[0].kind, DependentQueuedEventKind::Redact);
 
         // Now remove it.

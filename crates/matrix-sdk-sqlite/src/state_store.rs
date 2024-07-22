@@ -1864,7 +1864,7 @@ impl StateStore for SqliteStateStore {
         room_id: &RoomId,
         transaction_id: &TransactionId,
         content: DependentQueuedEventKind,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let room_id = self.encode_key(keys::DEPENDENTS_SEND_QUEUE, room_id);
         let content = self.serialize_json(&content)?;
 
@@ -1875,7 +1875,11 @@ impl StateStore for SqliteStateStore {
             .await?
             .with_transaction(move |txn| {
                 txn.prepare_cached("INSERT INTO dependent_send_queue_events (room_id, transaction_id, content) VALUES (?, ?, ?)")?.execute((room_id, transaction_id, content))?;
-                Ok(())
+
+                // Query the id for the latest entry we just inserted.
+                let id: usize = txn.query_row("SELECT ROWID FROM dependent_send_queue_events ORDER BY ROWID LIMIT 1", (), |row| row.get(0))?;
+
+                Ok(id)
             })
             .await
     }

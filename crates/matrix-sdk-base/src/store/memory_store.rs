@@ -1007,7 +1007,7 @@ impl StateStore for MemoryStore {
         room: &RoomId,
         transaction_id: &TransactionId,
         content: DependentQueuedEventKind,
-    ) -> Result<(), Self::Error> {
+    ) -> Result<usize, Self::Error> {
         let id = {
             let mut next_id = self.dependent_send_queue_event_next_id.lock().unwrap();
             // Don't tell anyone, but sometimes I miss C++'s `x++` operator.
@@ -1025,7 +1025,7 @@ impl StateStore for MemoryStore {
             },
         );
 
-        Ok(())
+        Ok(id)
     }
 
     async fn update_dependent_send_queue_event(

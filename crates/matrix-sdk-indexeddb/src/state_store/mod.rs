@@ -1577,7 +1577,7 @@ impl_state_store!({
         room_id: &RoomId,
         transaction_id: &TransactionId,
         content: DependentQueuedEventKind,
-    ) -> Result<()> {
+    ) -> Result<usize> {
         let encoded_key = self.encode_key(keys::DEPENDENT_SEND_QUEUE, room_id);
 
         let tx = self.inner.transaction_on_one_with_mode(
@@ -1612,7 +1612,7 @@ impl_state_store!({
 
         tx.await.into_result()?;
 
-        Ok(())
+        Ok(next_id)
     }
 
     async fn update_dependent_send_queue_event(
