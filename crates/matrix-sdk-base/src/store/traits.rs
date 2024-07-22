@@ -1252,6 +1252,18 @@ pub enum DependentQueuedEventKind {
 
     /// The event should be redacted/aborted/removed.
     Redact,
+
+    /// The event should be reacted to, with the given key.
+    React {
+        /// Key used for the reaction.
+        key: String,
+
+        /// The transaction id to use for sending the reaction.
+        ///
+        /// Note: it's not the one for the local echo of the event we're
+        /// reacting to.
+        transaction_id: OwnedTransactionId,
+    },
 }
 
 /// An event to be sent, depending on a [`QueuedEvent`] to be sent first.

@@ -1161,6 +1161,10 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                     .await;
                 }
             }
+
+            LocalEchoContent::React { key, send_handle } => {
+                todo!();
+            }
         }
     }
 
