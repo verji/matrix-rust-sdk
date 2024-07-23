@@ -15,8 +15,9 @@
 use assert_matches::assert_matches;
 use assert_matches2::assert_let;
 use eyeball_im::VectorDiff;
-use matrix_sdk::test_utils::events::EventFactory;
-use matrix_sdk_base::deserialized_responses::SyncTimelineEvent;
+use matrix_sdk_base::{
+    deserialized_responses::SyncTimelineEvent, test_utils::events::EventFactory,
+};
 use matrix_sdk_test::{async_test, sync_timeline_event, ALICE, BOB, CAROL};
 use ruma::{
     assign,
@@ -101,7 +102,7 @@ async fn test_replace_with_initial_events_and_read_marker() {
     .with_settings(TimelineInnerSettings { track_read_receipts: true, ..Default::default() });
 
     let factory = EventFactory::new();
-    let ev = factory.text_msg("hey").sender(*ALICE).into_sync();
+    let ev = factory.text_msg("hey").sender(*ALICE).into_sync_timeline();
 
     timeline.inner.add_events_at(vec![ev], TimelineEnd::Back, RemoteEventOrigin::Sync).await;
 
@@ -110,7 +111,7 @@ async fn test_replace_with_initial_events_and_read_marker() {
     assert!(items[0].is_day_divider());
     assert_eq!(items[1].as_event().unwrap().content().as_message().unwrap().body(), "hey");
 
-    let ev = factory.text_msg("yo").sender(*BOB).into_sync();
+    let ev = factory.text_msg("yo").sender(*BOB).into_sync_timeline();
     timeline.inner.replace_with_initial_remote_events(vec![ev], RemoteEventOrigin::Sync).await;
 
     let items = timeline.inner.items().await;
@@ -123,6 +124,8 @@ async fn test_replace_with_initial_events_and_read_marker() {
 async fn test_sticker() {
     let timeline = TestTimeline::new();
     let mut stream = timeline.subscribe_events().await;
+
+    let f = EventFactory::new();
 
     timeline
         .handle_live_event(sync_timeline_event!({
@@ -312,9 +315,9 @@ async fn test_dedup_initial() {
     let timeline = TestTimeline::new();
 
     let factory = EventFactory::new();
-    let event_a = factory.text_msg("A").sender(*ALICE).into_sync();
-    let event_b = factory.text_msg("B").sender(*BOB).into_sync();
-    let event_c = factory.text_msg("C").sender(*CAROL).into_sync();
+    let event_a = factory.text_msg("A").sender(*ALICE).into_sync_timeline();
+    let event_b = factory.text_msg("B").sender(*BOB).into_sync_timeline();
+    let event_c = factory.text_msg("C").sender(*CAROL).into_sync_timeline();
 
     timeline
         .inner
@@ -360,9 +363,9 @@ async fn test_internal_id_prefix() {
     let timeline = TestTimeline::with_internal_id_prefix("le_prefix_".to_owned());
 
     let factory = EventFactory::new();
-    let ev_a = factory.text_msg("A").sender(*ALICE).into_sync();
-    let ev_b = factory.text_msg("B").sender(*BOB).into_sync();
-    let ev_c = factory.text_msg("C").sender(*CAROL).into_sync();
+    let ev_a = factory.text_msg("A").sender(*ALICE).into_sync_timeline();
+    let ev_b = factory.text_msg("B").sender(*BOB).into_sync_timeline();
+    let ev_c = factory.text_msg("C").sender(*CAROL).into_sync_timeline();
 
     timeline
         .inner

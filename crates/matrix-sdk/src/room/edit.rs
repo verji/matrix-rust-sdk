@@ -200,7 +200,9 @@ mod tests {
     use std::collections::BTreeMap;
 
     use assert_matches2::{assert_let, assert_matches};
-    use matrix_sdk_base::deserialized_responses::SyncTimelineEvent;
+    use matrix_sdk_base::{
+        deserialized_responses::SyncTimelineEvent, test_utils::events::EventFactory,
+    };
     use matrix_sdk_test::async_test;
     use ruma::{
         event_id,
@@ -215,7 +217,7 @@ mod tests {
     use serde_json::json;
 
     use super::{make_edit_event, EditError, EventSource};
-    use crate::{room::edit::EditedContent, test_utils::events::EventFactory};
+    use crate::room::edit::EditedContent;
 
     #[derive(Default)]
     struct TestEventCache {

@@ -16,7 +16,8 @@ use std::{io, sync::Arc};
 
 use assert_matches::assert_matches;
 use eyeball_im::VectorDiff;
-use matrix_sdk::{test_utils::events::EventFactory, Error};
+use matrix_sdk::Error;
+use matrix_sdk_base::test_utils::events::EventFactory;
 use matrix_sdk_test::{async_test, sync_timeline_event, ALICE, BOB};
 use ruma::{
     event_id,
@@ -299,7 +300,7 @@ async fn test_read_marker_removed_after_local_echo_disappeared() {
                 .sender(user_id!("@a:b.c"))
                 .event_id(event_id)
                 .server_ts(MilliSecondsSinceUnixEpoch::now())
-                .into_sync()],
+                .into_sync_timeline()],
             RemoteEventOrigin::Sync,
         )
         .await;

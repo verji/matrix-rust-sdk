@@ -15,6 +15,7 @@ use ruma::{
 };
 use serde_json::json;
 use tokio::runtime::Builder;
+use matrix_sdk_base::test_utils::events::EventFactory;
 
 pub fn receive_all_members_benchmark(c: &mut Criterion) {
     const MEMBERS_IN_ROOM: usize = 100000;
@@ -22,7 +23,6 @@ pub fn receive_all_members_benchmark(c: &mut Criterion) {
     let runtime = Builder::new_multi_thread().build().expect("Can't create runtime");
     let room_id = owned_room_id!("!room:example.com");
 
-    let ev_builder = EventBuilder::new();
     let mut member_events: Vec<Raw<RoomMemberEvent>> = Vec::with_capacity(MEMBERS_IN_ROOM);
     let member_content_json = json!({
         "avatar_url": "mxc://example.org/SEsfnsuifSDFSSEF",
@@ -30,20 +30,11 @@ pub fn receive_all_members_benchmark(c: &mut Criterion) {
         "membership": "join",
         "reason": "Looking for support",
     });
-    let member_content: Raw<RoomMemberEventContent> =
-        member_content_json.into_raw_state_event_content().cast();
     for i in 0..MEMBERS_IN_ROOM {
+        let ev_factory = EventFactory::new();
         let user_id = OwnedUserId::try_from(format!("@user_{}:matrix.org", i)).unwrap();
         let state_key = user_id.to_string();
-        let event: Raw<RoomMemberEvent> = ev_builder
-            .make_state_event(
-                &user_id,
-                &room_id,
-                &state_key,
-                member_content.deserialize().unwrap(),
-                None,
-            )
-            .cast();
+        let event: Raw<RoomMemberEvent> = ev_factory.sender(&user_id).room(&room_id).raw_content(&member_content_json).state_key(&state_key).into_raw_sync_state();
         member_events.push(event);
     }
 

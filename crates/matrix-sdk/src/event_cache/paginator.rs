@@ -532,7 +532,9 @@ mod tests {
     use async_trait::async_trait;
     use futures_core::Future;
     use futures_util::FutureExt as _;
-    use matrix_sdk_base::deserialized_responses::TimelineEvent;
+    use matrix_sdk_base::{
+        deserialized_responses::TimelineEvent, test_utils::events::EventFactory,
+    };
     use matrix_sdk_test::async_test;
     use once_cell::sync::Lazy;
     use ruma::{api::Direction, event_id, room_id, uint, user_id, EventId, RoomId, UInt, UserId};
@@ -546,7 +548,7 @@ mod tests {
     use crate::{
         event_cache::paginator::Paginator,
         room::{EventWithContextResponse, Messages, MessagesOptions},
-        test_utils::{assert_event_matches_msg, events::EventFactory},
+        test_utils::assert_event_matches_msg,
     };
 
     #[derive(Clone)]

@@ -16,8 +16,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering::SeqCst};
 
-use matrix_sdk_base::deserialized_responses::{SyncTimelineEvent, TimelineEvent};
-use matrix_sdk_test::{sync_timeline_event, timeline_event};
+use matrix_sdk_test::{sync_state_event, sync_timeline_event, timeline_event};
 use ruma::{
     events::{
         reaction::ReactionEventContent,
@@ -26,13 +25,17 @@ use ruma::{
             message::{Relation, RoomMessageEventContent},
             redaction::RoomRedactionEventContent,
         },
-        AnySyncTimelineEvent, AnyTimelineEvent, EventContent,
+        AnySyncStateEvent, AnySyncTimelineEvent, AnyTimelineEvent, EventContent, SyncStateEvent,
     },
     serde::Raw,
     server_name, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedRoomId, OwnedUserId,
     RoomId, UserId,
 };
-use serde::Serialize;
+use ruma::events::{RedactContent, RedactedStateEventContent, StateEvent, StaticEventContent, StaticStateEventContent};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+
+use crate::deserialized_responses::{SyncTimelineEvent, TimelineEvent};
 
 #[derive(Debug)]
 pub struct EventBuilder<E: EventContent> {
@@ -42,6 +45,8 @@ pub struct EventBuilder<E: EventContent> {
     redacts: Option<OwnedEventId>,
     content: E,
     server_ts: MilliSecondsSinceUnixEpoch,
+    prev_content: Option<E>,
+    state_key: Option<String>,
 }
 
 impl<E: EventContent> EventBuilder<E>
@@ -68,6 +73,16 @@ where
         self
     }
 
+    pub fn prev_content(mut self, prev_content: Option<E>) -> Self {
+        self.prev_content = prev_content;
+        self
+    }
+
+    pub fn state_key(mut self, state_key: &str) -> Self {
+        self.state_key = Some(state_key.to_string());
+        self
+    }
+
     pub fn into_raw_timeline(self) -> Raw<AnyTimelineEvent> {
         let room_id = self.room.expect("we should have a room id at this point");
         let event_id =
@@ -81,6 +96,7 @@ where
             "room_id": room_id,
             "origin_server_ts": self.server_ts,
             "redacts": self.redacts,
+            "state_key": self.state_key,
         })
     }
 
@@ -88,7 +104,7 @@ where
         TimelineEvent::new(self.into_raw_timeline())
     }
 
-    pub fn into_raw_sync(self) -> Raw<AnySyncTimelineEvent> {
+    pub fn into_raw_sync_timeline(self) -> Raw<AnySyncTimelineEvent> {
         let event_id = self
             .event_id
             .or_else(|| self.room.map(|room_id| EventId::new(room_id.server_name().unwrap())))
@@ -101,11 +117,47 @@ where
             "sender": self.sender.expect("we should have a sender user id at this point"),
             "origin_server_ts": self.server_ts,
             "redacts": self.redacts,
+            "state_key": self.state_key,
         })
     }
 
-    pub fn into_sync(self) -> SyncTimelineEvent {
-        SyncTimelineEvent::new(self.into_raw_sync())
+    pub fn into_sync_timeline(self) -> SyncTimelineEvent {
+        SyncTimelineEvent::new(self.into_raw_sync_timeline())
+    }
+
+    pub fn into_raw_any_sync_state(self) -> Raw<AnySyncStateEvent> {
+        let event_id = self
+            .event_id
+            .or_else(|| self.room.map(|room_id| EventId::new(room_id.server_name().unwrap())))
+            .unwrap_or_else(|| EventId::new(server_name!("dummy.org")));
+
+        let unsigned = if let Some(prev_content) = self.prev_content {
+            json!({ "prev_content": prev_content })
+        } else {
+            json!({})
+        };
+
+        sync_state_event!({
+            "type": self.content.event_type(),
+            "content": self.content,
+            "event_id": event_id,
+            "sender": self.sender.expect("we should have a sender user id at this point"),
+            "origin_server_ts": self.server_ts,
+            "redacts": self.redacts,
+            "unsigned": unsigned,
+            "state_key": self.state_key,
+        })
+    }
+
+    pub fn into_raw_sync_state<C: StaticStateEventContent + RedactContent>(self) -> Raw<StateEvent<C>>
+    where
+        C::Redacted: RedactedStateEventContent
+    {
+        self.into_raw_timeline().cast()
+    }
+
+    pub fn into_any_sync_state(self) -> AnySyncStateEvent {
+        self.into_raw_any_sync_state().deserialize().unwrap()
     }
 }
 
@@ -122,7 +174,7 @@ where
     E::EventType: Serialize,
 {
     fn from(val: EventBuilder<E>) -> Self {
-        val.into_raw_sync()
+        val.into_raw_sync_timeline()
     }
 }
 
@@ -140,7 +192,7 @@ where
     E::EventType: Serialize,
 {
     fn from(val: EventBuilder<E>) -> Self {
-        val.into_sync()
+        val.into_sync_timeline()
     }
 }
 
@@ -184,7 +236,13 @@ impl EventFactory {
             event_id: None,
             redacts: None,
             content,
+            prev_content: None,
+            state_key: None,
         }
+    }
+
+    pub fn raw_content<E: EventContent + for<'a> Deserialize<'a>>(&self, json: &serde_json::Value) -> EventBuilder<E> {
+        self.event(Raw::new(json).unwrap().cast::<E>().deserialize().unwrap())
     }
 
     /// Create a new plain text `m.room.message`.

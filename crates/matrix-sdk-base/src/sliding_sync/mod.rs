@@ -866,7 +866,8 @@ mod tests {
         },
         mxc_uri, owned_mxc_uri, owned_user_id, room_alias_id, room_id,
         serde::Raw,
-        uint, user_id, JsOption, MxcUri, OwnedRoomId, OwnedUserId, RoomAliasId, RoomId, UserId,
+        uint, user_id, JsOption, MilliSecondsSinceUnixEpoch, MxcUri, OwnedRoomId, OwnedUserId,
+        RoomAliasId, RoomId, UserId,
     };
     use serde_json::json;
 
@@ -874,7 +875,7 @@ mod tests {
     use crate::{
         rooms::normal::{RoomHero, RoomInfoNotableUpdateReasons},
         store::MemoryStore,
-        test_utils::logged_in_base_client,
+        test_utils::{events::EventFactory, logged_in_base_client},
         BaseClient, Room, RoomInfoNotableUpdate, RoomState,
     };
 
@@ -2447,22 +2448,14 @@ mod tests {
         content: C,
         prev_content: Option<C>,
     ) -> Raw<E> {
-        let unsigned = if let Some(prev_content) = prev_content {
-            json!({ "prev_content": prev_content })
-        } else {
-            json!({})
-        };
-
-        Raw::new(&json!({
-            "type": content.event_type(),
-            "state_key": state_key,
-            "content": content,
-            "event_id": event_id!("$evt"),
-            "sender": sender,
-            "origin_server_ts": 10,
-            "unsigned": unsigned,
-        }))
-        .expect("Failed to create state event")
-        .cast()
+        EventFactory::new()
+            .sender(sender)
+            .event(content)
+            .event_id(event_id!("$evt"))
+            .state_key(state_key)
+            .server_ts(MilliSecondsSinceUnixEpoch(10.try_into().unwrap()))
+            .prev_content(prev_content)
+            .into_raw_any_sync_state()
+            .cast()
     }
 }

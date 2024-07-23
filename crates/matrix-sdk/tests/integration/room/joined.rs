@@ -7,9 +7,8 @@ use futures_util::future::join_all;
 use matrix_sdk::{
     config::SyncSettings,
     room::{edit::EditedContent, Receipts, ReportedContentScore, RoomMemberRole},
-    test_utils::events::EventFactory,
 };
-use matrix_sdk_base::RoomState;
+use matrix_sdk_base::{test_utils::events::EventFactory, RoomState};
 use matrix_sdk_test::{
     async_test, test_json, test_json::sync::CUSTOM_ROOM_POWER_LEVELS, EphemeralTestEvent,
     GlobalAccountDataTestEvent, JoinedRoomBuilder, SyncResponseBuilder, DEFAULT_TEST_ROOM_ID,

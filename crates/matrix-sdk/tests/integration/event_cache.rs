@@ -6,8 +6,9 @@ use matrix_sdk::{
         BackPaginationOutcome, EventCacheError, RoomEventCacheUpdate,
         TimelineHasBeenResetWhilePaginating,
     },
-    test_utils::{assert_event_matches_msg, events::EventFactory, logged_in_client_with_server},
+    test_utils::{assert_event_matches_msg, logged_in_client_with_server},
 };
+use matrix_sdk_base::test_utils::events::EventFactory;
 use matrix_sdk_test::{
     async_test, GlobalAccountDataTestEvent, JoinedRoomBuilder, SyncResponseBuilder,
 };
@@ -118,7 +119,11 @@ async fn test_add_initial_events() {
     // smoke test for the event cache.
     client
         .event_cache()
-        .add_initial_events(room_id, vec![ev_factory.text_msg("new choice!").into_sync()], None)
+        .add_initial_events(
+            room_id,
+            vec![ev_factory.text_msg("new choice!").into_sync_timeline()],
+            None,
+        )
         .await
         .unwrap();
 
@@ -172,8 +177,8 @@ async fn test_ignored_unignored() {
         .add_initial_events(
             room_id,
             vec![
-                ev_factory.text_msg("hey there").sender(dexter).into_sync(),
-                ev_factory.text_msg("hoy!").sender(ivan).into_sync(),
+                ev_factory.text_msg("hey there").sender(dexter).into_sync_timeline(),
+                ev_factory.text_msg("hoy!").sender(ivan).into_sync_timeline(),
             ],
             None,
         )
@@ -184,7 +189,7 @@ async fn test_ignored_unignored() {
         .event_cache()
         .add_initial_events(
             other_room_id,
-            vec![ev_factory.text_msg("demat!").sender(ivan).into_sync()],
+            vec![ev_factory.text_msg("demat!").sender(ivan).into_sync_timeline()],
             None,
         )
         .await
@@ -612,7 +617,7 @@ async fn test_reset_while_backpaginating() {
             JoinedRoomBuilder::new(room_id)
                 // Note to self: a timeline must have at least single event to be properly
                 // serialized.
-                .add_timeline_event(ev_factory.text_msg("heyo").into_raw_sync())
+                .add_timeline_event(ev_factory.text_msg("heyo").into_raw_sync_timeline())
                 .set_timeline_prev_batch("first_backpagination".to_owned()),
         );
         let response_body = sync_builder.build_json_sync_response();
@@ -652,7 +657,7 @@ async fn test_reset_while_backpaginating() {
         JoinedRoomBuilder::new(room_id)
             // Note to self: a timeline must have at least single event to be properly
             // serialized.
-            .add_timeline_event(ev_factory.text_msg("heyo").into_raw_sync())
+            .add_timeline_event(ev_factory.text_msg("heyo").into_raw_sync_timeline())
             .set_timeline_prev_batch("second_backpagination".to_owned())
             .set_timeline_limited(),
     );

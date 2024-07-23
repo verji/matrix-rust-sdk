@@ -16,6 +16,8 @@
 
 #![allow(dead_code)]
 
+pub mod events;
+
 use ruma::{owned_user_id, UserId};
 
 use crate::{BaseClient, SessionMeta};

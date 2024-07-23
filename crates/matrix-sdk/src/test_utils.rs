@@ -12,8 +12,6 @@ use ruma::{
 };
 use url::Url;
 
-pub mod events;
-
 use crate::{
     config::RequestConfig,
     matrix_auth::{MatrixSession, MatrixSessionTokens},

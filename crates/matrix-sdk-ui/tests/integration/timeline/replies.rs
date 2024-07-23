@@ -4,11 +4,8 @@ use assert_matches::assert_matches;
 use assert_matches2::assert_let;
 use eyeball_im::VectorDiff;
 use futures_util::StreamExt;
-use matrix_sdk::{
-    config::SyncSettings,
-    test_utils::{events::EventFactory, logged_in_client_with_server},
-};
-use matrix_sdk_base::timeout::timeout;
+use matrix_sdk::{config::SyncSettings, test_utils::logged_in_client_with_server};
+use matrix_sdk_base::{test_utils::events::EventFactory, timeout::timeout};
 use matrix_sdk_test::{
     async_test, EventBuilder, JoinedRoomBuilder, SyncResponseBuilder, ALICE, BOB, CAROL,
 };
@@ -187,7 +184,8 @@ async fn test_transfer_in_reply_to_details_to_re_received_item() {
 
     // Given a reply to an event that's not itself in the timeline...
     let event_id_1 = event_id!("$event1");
-    let reply_event = f.text_msg("Reply").sender(&BOB).reply_to(event_id_1).into_raw_sync();
+    let reply_event =
+        f.text_msg("Reply").sender(&BOB).reply_to(event_id_1).into_raw_sync_timeline();
     sync_builder
         .add_joined_room(JoinedRoomBuilder::new(room_id).add_timeline_event(reply_event.clone()));
 

@@ -18,10 +18,8 @@ use assert_matches::assert_matches;
 use assert_matches2::assert_let;
 use eyeball_im::VectorDiff;
 use futures_util::StreamExt;
-use matrix_sdk::{
-    config::SyncSettings,
-    test_utils::{events::EventFactory, logged_in_client_with_server},
-};
+use matrix_sdk::{config::SyncSettings, test_utils::logged_in_client_with_server};
+use matrix_sdk_base::test_utils::events::EventFactory;
 use matrix_sdk_test::{
     async_test, sync_timeline_event, JoinedRoomBuilder, RoomAccountDataTestEvent, StateTestEvent,
     SyncResponseBuilder,
@@ -466,10 +464,10 @@ async fn test_duplicate_maintains_correct_order() {
     let f = EventFactory::new().sender(user_id!("@a:b.c"));
 
     // We receive an event F, from a sliding sync with timeline limit=1.
-    sync_builder.add_joined_room(
-        JoinedRoomBuilder::new(room_id)
-            .add_timeline_event(f.text_msg("C").event_id(event_id!("$c")).into_raw_sync()),
-    );
+    sync_builder
+        .add_joined_room(JoinedRoomBuilder::new(room_id).add_timeline_event(
+            f.text_msg("C").event_id(event_id!("$c")).into_raw_sync_timeline(),
+        ));
 
     mock_sync(&server, sync_builder.build_json_sync_response(), None).await;
     let _response = client.sync_once(sync_settings.clone()).await.unwrap();
@@ -487,9 +485,9 @@ async fn test_duplicate_maintains_correct_order() {
     // increased the timeline limit).
     sync_builder.add_joined_room(
         JoinedRoomBuilder::new(room_id)
-            .add_timeline_event(f.text_msg("A").event_id(event_id!("$a")).into_raw_sync())
-            .add_timeline_event(f.text_msg("B").event_id(event_id!("$b")).into_raw_sync())
-            .add_timeline_event(f.text_msg("C").event_id(event_id!("$c")).into_raw_sync()),
+            .add_timeline_event(f.text_msg("A").event_id(event_id!("$a")).into_raw_sync_timeline())
+            .add_timeline_event(f.text_msg("B").event_id(event_id!("$b")).into_raw_sync_timeline())
+            .add_timeline_event(f.text_msg("C").event_id(event_id!("$c")).into_raw_sync_timeline()),
     );
 
     mock_sync(&server, sync_builder.build_json_sync_response(), None).await;
