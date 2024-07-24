@@ -25,7 +25,10 @@ use imbl::Vector;
 use matrix_sdk::crypto::OlmMachine;
 use matrix_sdk::{
     deserialized_responses::SyncTimelineEvent,
-    event_cache::{paginator::Paginator, RoomEventCache},
+    event_cache::{
+        paginator::{Paginator, PaginatorError},
+        RoomEventCache,
+    },
     send_queue::{LocalEcho, RoomSendQueueUpdate, SendHandle},
     Result, Room,
 };
@@ -45,13 +48,18 @@ use ruma::{
         AnySyncTimelineEvent, MessageLikeEventType,
     },
     serde::Raw,
-    EventId, OwnedEventId, OwnedTransactionId, RoomVersionId, TransactionId, UserId,
+    uint, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedTransactionId, RoomVersionId,
+    TransactionId, UserId,
 };
 use tokio::sync::{RwLock, RwLockWriteGuard};
 use tracing::{debug, error, field::debug, info, instrument, trace, warn};
 #[cfg(feature = "e2e-encryption")]
 use tracing::{field, info_span, Instrument as _};
 
+pub(super) use self::state::{
+    EventMeta, FullEventMeta, TimelineEnd, TimelineInnerMetadata, TimelineInnerState,
+    TimelineInnerStateTransaction,
+};
 #[cfg(feature = "e2e-encryption")]
 use super::traits::Decryptor;
 use super::{
@@ -65,16 +73,14 @@ use super::{
     TimelineItemContent, TimelineItemKind,
 };
 use crate::{
-    timeline::{day_dividers::DayDividerAdjuster, TimelineEventFilterFn},
+    timeline::{
+        day_dividers::DayDividerAdjuster, event_handler::LiveTimelineUpdatesAllowed,
+        TimelineEventFilterFn,
+    },
     unable_to_decrypt_hook::UtdHookManager,
 };
 
 mod state;
-
-pub(super) use self::state::{
-    EventMeta, FullEventMeta, TimelineEnd, TimelineInnerMetadata, TimelineInnerState,
-    TimelineInnerStateTransaction,
-};
 
 /// Data associated to the current timeline focus.
 #[derive(Debug)]
@@ -92,6 +98,8 @@ enum TimelineFocusData {
         /// Number of context events to request for the first request.
         num_context_events: u16,
     },
+
+    PinnedEvents,
 }
 
 #[derive(Clone, Debug)]
@@ -229,13 +237,16 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         unable_to_decrypt_hook: Option<Arc<UtdHookManager>>,
     ) -> Self {
         let (focus_data, is_live) = match focus {
-            TimelineFocus::Live => (TimelineFocusData::Live, true),
+            TimelineFocus::Live => (TimelineFocusData::Live, LiveTimelineUpdatesAllowed::All),
             TimelineFocus::Event { target, num_context_events } => {
                 let paginator = Paginator::new(Box::new(room_data_provider.clone()));
                 (
                     TimelineFocusData::Event { paginator, event_id: target, num_context_events },
-                    false,
+                    LiveTimelineUpdatesAllowed::None,
                 )
+            }
+            TimelineFocus::PinnedEvents => {
+                (TimelineFocusData::PinnedEvents, LiveTimelineUpdatesAllowed::PinnedEvents)
             }
         };
 
@@ -298,7 +309,62 @@ impl<P: RoomDataProvider> TimelineInner<P> {
 
                 Ok(has_events)
             }
+
+            TimelineFocusData::PinnedEvents => {
+                let pinned_event_ids = self.room_data_provider.room_pinned_event_ids();
+                let loaded_events = self
+                    .pinned_events_load_events(&pinned_event_ids)
+                    .await
+                    .map_err(PaginationError::Paginator)?;
+
+                drop(focus_guard);
+
+                let has_events = !loaded_events.is_empty();
+
+                self.replace_with_initial_remote_events(
+                    loaded_events,
+                    RemoteEventOrigin::Pagination,
+                )
+                .await;
+
+                Ok(has_events)
+            }
         }
+    }
+
+    pub(crate) async fn pinned_events_load_events(
+        &self,
+        pinned_event_ids: &Vec<OwnedEventId>,
+    ) -> Result<Vec<SyncTimelineEvent>, PaginatorError> {
+        let mut loaded_events = Vec::new();
+
+        for id in pinned_event_ids {
+            if let Ok(res) = self.room_data_provider.event_with_context(id, true, uint!(1)).await {
+                if let Some(ev) = res.event {
+                    loaded_events.push(ev);
+                }
+            }
+        }
+
+        let sorted_events = loaded_events
+            .into_iter()
+            .sorted_by(|e1, e2| {
+                let ts1 = e1
+                    .event
+                    .deserialize()
+                    .map(|e| e.origin_server_ts())
+                    .unwrap_or_else(|_| MilliSecondsSinceUnixEpoch::now());
+                let ts2 = e2
+                    .event
+                    .deserialize()
+                    .map(|e| e.origin_server_ts())
+                    .unwrap_or_else(|_| MilliSecondsSinceUnixEpoch::now());
+                ts1.cmp(&ts2)
+            })
+            .map(Into::into)
+            .collect();
+
+        Ok(sorted_events)
     }
 
     /// Run a backward pagination (in focused mode) and append the results to
@@ -315,6 +381,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                 .paginate_backward(num_events.into())
                 .await
                 .map_err(PaginationError::Paginator)?,
+            TimelineFocusData::PinnedEvents => return Err(PaginationError::NotEventFocusMode),
         };
 
         self.add_events_at(pagination.events, TimelineEnd::Front, RemoteEventOrigin::Pagination)
@@ -337,6 +404,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                 .paginate_forward(num_events.into())
                 .await
                 .map_err(PaginationError::Paginator)?,
+            TimelineFocusData::PinnedEvents => return Err(PaginationError::NotEventFocusMode),
         };
 
         self.add_events_at(pagination.events, TimelineEnd::Back, RemoteEventOrigin::Pagination)
@@ -450,6 +518,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                             content: event_content.clone(),
                             relations: Default::default(),
                         },
+                        &self.room_data_provider,
                     )
                     .await;
 
@@ -467,7 +536,14 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                 };
 
                 state
-                    .handle_local_event(sender, sender_profile, TransactionId::new(), None, content)
+                    .handle_local_event(
+                        sender,
+                        sender_profile,
+                        TransactionId::new(),
+                        None,
+                        content,
+                        &self.room_data_provider,
+                    )
                     .await;
 
                 // Remember the remote echo to redact on the homeserver.
@@ -527,7 +603,6 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         if events.is_empty() {
             return Default::default();
         }
-
         let mut state = self.state.write().await;
         state
             .add_remote_events_at(
@@ -613,7 +688,16 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         let profile = self.room_data_provider.profile_from_user_id(&sender).await;
 
         let mut state = self.state.write().await;
-        state.handle_local_event(sender, profile, txn_id, send_handle, content).await;
+        state
+            .handle_local_event(
+                sender,
+                profile,
+                txn_id,
+                send_handle,
+                content,
+                &self.room_data_provider,
+            )
+            .await;
     }
 
     /// Update the send state of a local event represented by a transaction ID.

@@ -34,8 +34,8 @@ use crate::{
     timeline::{
         day_dividers::DayDividerAdjuster,
         event_handler::{
-            Flow, HandleEventResult, TimelineEventContext, TimelineEventHandler, TimelineEventKind,
-            TimelineItemPosition,
+            Flow, HandleEventResult, LiveTimelineUpdatesAllowed, TimelineEventContext,
+            TimelineEventHandler, TimelineEventKind, TimelineItemPosition,
         },
         event_item::{ReactionInfo, RemoteEventOrigin, TimelineEventItemId},
         polls::PollPendingEvents,
@@ -66,13 +66,13 @@ pub(in crate::timeline) struct TimelineInnerState {
     pub meta: TimelineInnerMetadata,
 
     /// Is the timeline focused on a live view?
-    pub is_live_timeline: bool,
+    pub is_live_timeline: LiveTimelineUpdatesAllowed,
 }
 
 impl TimelineInnerState {
     pub(super) fn new(
         room_version: RoomVersionId,
-        is_live_timeline: bool,
+        is_live_timeline: LiveTimelineUpdatesAllowed,
         internal_id_prefix: Option<String>,
         unable_to_decrypt_hook: Option<Arc<UtdHookManager>>,
     ) -> Self {
@@ -156,13 +156,14 @@ impl TimelineInnerState {
 
     /// Adds a local echo (for an event) to the timeline.
     #[instrument(skip_all)]
-    pub(super) async fn handle_local_event(
+    pub(super) async fn handle_local_event<P: RoomDataProvider>(
         &mut self,
         own_user_id: OwnedUserId,
         own_profile: Option<Profile>,
         txn_id: OwnedTransactionId,
         send_handle: Option<SendHandle>,
         content: TimelineEventKind,
+        room_data_provider: &P,
     ) {
         let ctx = TimelineEventContext {
             sender: own_user_id,
@@ -186,6 +187,7 @@ impl TimelineInnerState {
                 // Local events are never UTD, so no need to pass in a raw_event - this is only
                 // used to determine the type of UTD if there is one.
                 None,
+                room_data_provider,
             )
             .await;
 
@@ -362,7 +364,7 @@ impl TimelineInnerState {
             items,
             previous_meta: &mut self.meta,
             meta,
-            is_live_timeline: self.is_live_timeline,
+            is_live_timeline: self.is_live_timeline.clone(),
         }
     }
 }
@@ -378,7 +380,7 @@ pub(in crate::timeline) struct TimelineInnerStateTransaction<'a> {
     pub meta: TimelineInnerMetadata,
 
     /// Is the timeline focused on a live view?
-    pub is_live_timeline: bool,
+    pub is_live_timeline: LiveTimelineUpdatesAllowed,
 
     /// Pointer to the previous meta, only used during [`Self::commit`].
     previous_meta: &'a mut TimelineInnerMetadata,
@@ -417,9 +419,10 @@ impl TimelineInnerStateTransaction<'_> {
         // resulting in [A, B, C, (previous events)], which is what we want.
 
         for event in events {
+            let event = event.into();
             let handle_one_res = self
                 .handle_remote_event(
-                    event.into(),
+                    event,
                     position,
                     room_data_provider,
                     settings,
@@ -569,7 +572,7 @@ impl TimelineInnerStateTransaction<'_> {
         };
 
         TimelineEventHandler::new(self, ctx)
-            .handle_event(day_divider_adjuster, event_kind, Some(&raw))
+            .handle_event(day_divider_adjuster, event_kind, Some(&raw), room_data_provider)
             .await
     }
 

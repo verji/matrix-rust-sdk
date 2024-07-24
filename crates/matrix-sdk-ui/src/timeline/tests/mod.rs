@@ -360,6 +360,14 @@ impl RoomDataProvider for TestRoomDataProvider {
     async fn load_fully_read_marker(&self) -> Option<OwnedEventId> {
         self.fully_read_marker.clone()
     }
+
+    fn room_pinned_event_ids(&self) -> Vec<OwnedEventId> {
+        Vec::new()
+    }
+
+    fn room_is_pinned_event_id(&self, _: &EventId) -> bool {
+        false
+    }
 }
 
 pub(super) async fn assert_event_is_updated(

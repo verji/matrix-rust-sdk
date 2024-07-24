@@ -88,6 +88,10 @@ pub(super) trait RoomDataProvider: Clone + Send + Sync + 'static + PaginableRoom
     async fn load_fully_read_marker(&self) -> Option<OwnedEventId>;
 
     async fn push_rules_and_context(&self) -> Option<(Ruleset, PushConditionRoomCtx)>;
+
+    fn room_pinned_event_ids(&self) -> Vec<OwnedEventId>;
+
+    fn room_is_pinned_event_id(&self, event_id: &EventId) -> bool;
 }
 
 #[async_trait]
@@ -210,6 +214,14 @@ impl RoomDataProvider for Room {
             }
             _ => None,
         }
+    }
+
+    fn room_pinned_event_ids(&self) -> Vec<OwnedEventId> {
+        self.pinned_event_ids()
+    }
+
+    fn room_is_pinned_event_id(&self, event_id: &EventId) -> bool {
+        self.is_pinned_event(event_id)
     }
 }
 

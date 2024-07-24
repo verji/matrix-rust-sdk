@@ -49,6 +49,7 @@ mod read_receipts;
 mod replies;
 mod subscribe;
 
+mod pinned_event;
 pub(crate) mod sliding_sync;
 
 #[async_test]
