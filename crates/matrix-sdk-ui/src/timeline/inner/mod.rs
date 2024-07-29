@@ -360,7 +360,7 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                     .deserialize()
                     .map(|e| e.origin_server_ts())
                     .unwrap_or_else(|_| MilliSecondsSinceUnixEpoch::now());
-                ts1.cmp(&ts2)
+                ts1.cmp(&ts2).reverse()
             })
             .map(Into::into)
             .collect();
