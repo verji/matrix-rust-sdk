@@ -240,10 +240,7 @@ impl Room {
             builder = builder.with_internal_id_prefix(internal_id_prefix);
         }
 
-        let timeline = builder
-            .with_focus(TimelineFocus::PinnedEvents)
-            .build()
-            .await?;
+        let timeline = builder.with_focus(TimelineFocus::PinnedEvents).build().await?;
 
         Ok(Timeline::new(timeline))
     }

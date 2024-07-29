@@ -340,10 +340,8 @@ impl<P: RoomDataProvider> TimelineInner<P> {
         let mut loaded_events = Vec::new();
 
         for id in pinned_event_ids {
-            if let Ok(res) = self.room_data_provider.event_with_context(id, true, uint!(1)).await {
-                if let Some(ev) = res.event {
-                    loaded_events.push(ev);
-                }
+            if let Ok(ev) = self.room_data_provider.room_event(id).await {
+                loaded_events.push(ev);
             }
         }
 
@@ -362,7 +360,6 @@ impl<P: RoomDataProvider> TimelineInner<P> {
                     .unwrap_or_else(|_| MilliSecondsSinceUnixEpoch::now());
                 ts1.cmp(&ts2).reverse()
             })
-            .map(Into::into)
             .collect();
 
         Ok(sorted_events)

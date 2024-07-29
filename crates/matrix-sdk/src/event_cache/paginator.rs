@@ -21,6 +21,7 @@ use std::sync::Mutex;
 
 use eyeball::{SharedObservable, Subscriber};
 use matrix_sdk_base::{deserialized_responses::TimelineEvent, SendOutsideWasm, SyncOutsideWasm};
+use matrix_sdk_common::deserialized_responses::SyncTimelineEvent;
 use ruma::{api::Direction, EventId, OwnedEventId, UInt};
 
 use crate::{
@@ -456,6 +457,9 @@ pub trait PaginableRoom: SendOutsideWasm + SyncOutsideWasm {
         num_events: UInt,
     ) -> Result<EventWithContextResponse, PaginatorError>;
 
+    /// Load a single room event.
+    async fn room_event(&self, event_id: &EventId) -> Result<SyncTimelineEvent, PaginatorError>;
+
     /// Runs a /messages query for the given room.
     async fn messages(&self, opts: MessagesOptions) -> Result<Messages, PaginatorError>;
 }
@@ -491,6 +495,22 @@ impl PaginableRoom for Room {
         Ok(response)
     }
 
+    async fn room_event(&self, event_id: &EventId) -> Result<SyncTimelineEvent, PaginatorError> {
+        let cached_event = if let Ok((cache, _)) = self.event_cache().await {
+            cache.event(event_id).await
+        } else {
+            None
+        };
+        if let Some(event) = cached_event {
+            Ok(event.into())
+        } else {
+            self.event(event_id)
+                .await
+                .map(|e| e.into())
+                .map_err(|err| PaginatorError::SdkError(Box::new(err)))
+        }
+    }
+
     async fn messages(&self, opts: MessagesOptions) -> Result<Messages, PaginatorError> {
         self.messages(opts).await.map_err(|err| PaginatorError::SdkError(Box::new(err)))
     }
@@ -511,6 +531,15 @@ impl PaginableRoom for WeakRoom {
         };
 
         PaginableRoom::event_with_context(&room, event_id, lazy_load_members, num_events).await
+    }
+
+    async fn room_event(&self, event_id: &EventId) -> Result<SyncTimelineEvent, PaginatorError> {
+        let Some(room) = self.get() else {
+            // Client is shutting down, return a default response.
+            return Err(PaginatorError::EventNotFound(event_id.to_owned()));
+        };
+
+        PaginableRoom::room_event(&room, event_id).await
     }
 
     /// Runs a /messages query for the given room.
@@ -1064,6 +1093,8 @@ mod tests {
     }
 
     mod aborts {
+        use matrix_sdk_common::deserialized_responses::SyncTimelineEvent;
+
         use super::*;
 
         #[derive(Clone, Default)]
@@ -1102,6 +1133,18 @@ mod tests {
 
             async fn messages(&self, _opts: MessagesOptions) -> Result<Messages, PaginatorError> {
                 self.wait_abort_and_yield().await
+            }
+
+            async fn room_event(
+                &self,
+                event_id: &EventId,
+            ) -> Result<SyncTimelineEvent, PaginatorError> {
+                let Some(room) = self.get() else {
+                    // Client is shutting down, return a default response.
+                    return Err(PaginatorError::EventNotFound(event_id.to_owned()));
+                };
+
+                PaginableRoom::room_event(&room, event_id).await
             }
         }
 
