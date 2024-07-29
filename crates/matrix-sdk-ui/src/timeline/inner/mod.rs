@@ -21,6 +21,7 @@ use eyeball_im::{ObservableVectorEntry, VectorDiff};
 use eyeball_im_util::vector::VectorObserverExt;
 use futures_core::Stream;
 use imbl::Vector;
+use itertools::Itertools;
 #[cfg(all(test, feature = "e2e-encryption"))]
 use matrix_sdk::crypto::OlmMachine;
 use matrix_sdk::{
