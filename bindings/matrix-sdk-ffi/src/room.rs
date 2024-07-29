@@ -228,6 +228,26 @@ impl Room {
         Ok(Timeline::new(timeline))
     }
 
+    pub async fn pinned_events_timeline(
+        &self,
+        internal_id_prefix: Option<String>,
+    ) -> Result<Arc<Timeline>, ClientError> {
+        let room = &self.inner;
+
+        let mut builder = matrix_sdk_ui::timeline::Timeline::builder(room);
+
+        if let Some(internal_id_prefix) = internal_id_prefix {
+            builder = builder.with_internal_id_prefix(internal_id_prefix);
+        }
+
+        let timeline = builder
+            .with_focus(TimelineFocus::PinnedEvents)
+            .build()
+            .await?;
+
+        Ok(Timeline::new(timeline))
+    }
+
     pub fn is_encrypted(&self) -> Result<bool, ClientError> {
         Ok(RUNTIME.block_on(self.inner.is_encrypted())?)
     }
