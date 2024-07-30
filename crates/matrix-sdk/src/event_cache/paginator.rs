@@ -23,7 +23,7 @@ use eyeball::{SharedObservable, Subscriber};
 use matrix_sdk_base::{deserialized_responses::TimelineEvent, SendOutsideWasm, SyncOutsideWasm};
 use matrix_sdk_common::deserialized_responses::SyncTimelineEvent;
 use ruma::{api::Direction, EventId, OwnedEventId, UInt};
-
+use tracing::warn;
 use crate::{
     room::{EventWithContextResponse, Messages, MessagesOptions, WeakRoom},
     Room,
@@ -496,19 +496,21 @@ impl PaginableRoom for Room {
     }
 
     async fn room_event(&self, event_id: &EventId) -> Result<SyncTimelineEvent, PaginatorError> {
-        let cached_event = if let Ok((cache, _)) = self.event_cache().await {
-            cache.event(event_id).await
-        } else {
-            None
-        };
-        if let Some(event) = cached_event {
-            Ok(event.into())
-        } else {
+        // let cached_event = if let Ok((cache, _)) = self.event_cache().await {
+        //     cache.event(event_id).await
+        // } else {
+        //     None
+        // };
+        // if let Some(event) = cached_event {
+        //     warn!("Loading event from cache");
+        //     Ok(event)
+        // } else {
+        //     warn!("Loading event from the HS");
             self.event(event_id)
                 .await
                 .map(|e| e.into())
                 .map_err(|err| PaginatorError::SdkError(Box::new(err)))
-        }
+        // }
     }
 
     async fn messages(&self, opts: MessagesOptions) -> Result<Messages, PaginatorError> {

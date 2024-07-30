@@ -20,6 +20,8 @@ use as_variant::as_variant;
 use eyeball_im::{ObservableVectorEntry, VectorDiff};
 use eyeball_im_util::vector::VectorObserverExt;
 use futures_core::Stream;
+use futures_util::future::join_all;
+use futures_util::{stream, StreamExt};
 use imbl::Vector;
 use itertools::Itertools;
 #[cfg(all(test, feature = "e2e-encryption"))]
@@ -37,22 +39,17 @@ use matrix_sdk::{
 use ruma::events::receipt::ReceiptEventContent;
 #[cfg(all(test, feature = "e2e-encryption"))]
 use ruma::RoomId;
-use ruma::{
-    api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType,
-    events::{
-        poll::unstable_start::UnstablePollStartEventContent,
-        reaction::ReactionEventContent,
-        receipt::{Receipt, ReceiptThread, ReceiptType},
-        relation::Annotation,
-        room::message::{MessageType, Relation},
-        AnyMessageLikeEventContent, AnySyncEphemeralRoomEvent, AnySyncMessageLikeEvent,
-        AnySyncTimelineEvent, MessageLikeEventType,
-    },
-    serde::Raw,
-    uint, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedTransactionId, RoomVersionId,
-    TransactionId, UserId,
-};
-use tokio::sync::{RwLock, RwLockWriteGuard};
+use ruma::{api::client::receipt::create_receipt::v3::ReceiptType as SendReceiptType, events::{
+    poll::unstable_start::UnstablePollStartEventContent,
+    reaction::ReactionEventContent,
+    receipt::{Receipt, ReceiptThread, ReceiptType},
+    relation::Annotation,
+    room::message::{MessageType, Relation},
+    AnyMessageLikeEventContent, AnySyncEphemeralRoomEvent, AnySyncMessageLikeEvent,
+    AnySyncTimelineEvent, MessageLikeEventType,
+}, serde::Raw, uint, EventId, MilliSecondsSinceUnixEpoch, OwnedEventId, OwnedTransactionId, RoomVersionId, TransactionId, UserId, event_id};
+use tokio::sync::{RwLock, RwLockWriteGuard, Semaphore};
+use tokio::task::JoinHandle;
 use tracing::{debug, error, field::debug, info, instrument, trace, warn};
 #[cfg(feature = "e2e-encryption")]
 use tracing::{field, info_span, Instrument as _};
@@ -339,11 +336,34 @@ impl<P: RoomDataProvider> TimelineInner<P> {
     ) -> Result<Vec<SyncTimelineEvent>, PaginatorError> {
         let mut loaded_events = Vec::new();
 
-        for id in pinned_event_ids {
-            if let Ok(ev) = self.room_data_provider.room_event(id).await {
+        // Parallelised
+
+        let max_parallel_requests = 10;
+        let room_data_provider = Arc::new(self.room_data_provider.clone());
+        let semaphore = Arc::new(Semaphore::new(max_parallel_requests));
+
+        let mut handles = stream::iter(pinned_event_ids.clone()).map(|id| tokio::spawn({
+            let provider = room_data_provider.clone();
+            let semaphore = semaphore.clone();
+            async move {
+                let _ = semaphore.acquire().await.unwrap();
+                provider.room_event(&id.to_owned()).await
+            }
+        }));
+
+        while let Some(ret) = handles.next().await {
+            if let Ok(Ok(ev)) = ret.await {
                 loaded_events.push(ev);
             }
         }
+
+        // Sequential
+
+        // for id in pinned_event_ids {
+        //     if let Ok(ev) = self.room_data_provider.room_event(id).await {
+        //         loaded_events.push(ev);
+        //     }
+        // }
 
         let sorted_events = loaded_events
             .into_iter()
