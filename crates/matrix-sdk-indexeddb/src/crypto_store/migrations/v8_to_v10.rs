@@ -26,9 +26,10 @@ use crate::{
         keys,
         migrations::{
             add_nonunique_index, do_schema_upgrade, old_keys,
-            v7::InboundGroupSessionIndexedDbObject2, MigrationDb,
+            v10::InboundGroupSessionIndexedDbObject3, v7::InboundGroupSessionIndexedDbObject2,
+            MigrationDb,
         },
-        InboundGroupSessionIndexedDbObject, Result,
+        Result,
     },
     IndexeddbCryptoStoreError,
 };
@@ -100,7 +101,7 @@ pub(crate) async fn data_migrate(name: &str, serializer: &IndexeddbSerializer) -
 
             // Serialize the session in the new format
             // This is much the same as [`IndexeddbStore::serialize_inbound_group_session`].
-            let new_value = InboundGroupSessionIndexedDbObject::new(
+            let new_value = InboundGroupSessionIndexedDbObject3::new(
                 serializer.maybe_encrypt_value(session.pickle().await)?,
                 !session.backed_up(),
             );
