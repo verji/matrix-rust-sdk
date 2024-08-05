@@ -1654,7 +1654,7 @@ struct InboundGroupSessionIndexedDbObject {
     /// https://github.com/element-hq/element-web/issues/26892#issuecomment-1906336076
     backed_up_to: i32,
 
-    /// The curve key of the device that send us this room key, base64-encoded.
+    /// The curve key of the device that sent us this room key, base64-encoded.
     curve_key: Option<String>,
 
     /// The type of the [`SenderData`] within this session, converted to a u8
