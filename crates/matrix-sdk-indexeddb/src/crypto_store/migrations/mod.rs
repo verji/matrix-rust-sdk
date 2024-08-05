@@ -444,8 +444,8 @@ mod tests {
         .await;
     }
 
-    /// Helper function for `test_v8_v10_migration_{un,}encrypted`: test
-    /// migrating `inbound_group_sessions` data from store v5 to store v10.
+    /// Helper function for `test_v8_v10_v12_migration_{un,}encrypted`: test
+    /// migrating `inbound_group_sessions` data from store v5 to store v12.
     async fn test_v8_v10_v12_migration_with_cipher(
         db_prefix: &str,
         store_cipher: Option<Arc<StoreCipher>>,
