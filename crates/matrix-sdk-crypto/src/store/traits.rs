@@ -104,6 +104,12 @@ pub trait CryptoStore: AsyncTraitDeps {
         session_id: &str,
     ) -> Result<Option<InboundGroupSession>, Self::Error>;
 
+    async fn get_inbound_group_sessions_for_device(
+        &self,
+        device_key: Curve25519PublicKey,
+        sender_data_type: SenderDataType,
+    ) -> InboundGroupSessionStream;
+
     /// Get withheld info for this key.
     /// Allows to know if the session was not sent on purpose.
     /// This only returns withheld info sent by the owner of the group session,
