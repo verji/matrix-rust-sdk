@@ -25,7 +25,6 @@ use crate::{
 
 mod old_keys;
 mod v0_to_v5;
-mod v10;
 mod v10_to_v11;
 mod v11_to_v12;
 mod v5_to_v7;
