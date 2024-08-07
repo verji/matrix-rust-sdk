@@ -332,6 +332,35 @@ impl UserIdentity {
         // higher priority than pinning.
         self.inner.has_pin_violation()
     }
+
+    /// Remove the requirement for this identity to be verified.
+    pub async fn withdraw_verification(&self) -> Result<(), CryptoStoreError> {
+        self.inner.withdraw_verification();
+        let to_save = UserIdentityData::Other(self.inner.clone());
+        let changes = Changes {
+            identities: IdentityChanges { changed: vec![to_save], ..Default::default() },
+            ..Default::default()
+        };
+        self.verification_machine.store.inner().save_changes(changes).await?;
+        Ok(())
+    }
+
+    /// Was this identity verified since initial observation and is not anymore?
+    ///
+    /// Such a violation should be reported to the local user by the
+    /// application, and resolved by
+    ///
+    /// - Verifying the new identity with [`UserIdentity::request_verification`]
+    /// - Or by withdrawing the verification requirement
+    ///   [`UserIdentity::withdraw_verification`].
+    pub fn has_verification_violation(&self) -> bool {
+        if !self.inner.was_previously_verified() {
+            // If that identity has never been verified it cannot be in violation.
+            return false;
+        };
+
+        return !self.is_verified();
+    }
 }
 
 /// Enum over the different user identity types we can have.
