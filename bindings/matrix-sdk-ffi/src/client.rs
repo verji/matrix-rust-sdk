@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt::Debug,
     path::PathBuf,
     sync::{Arc, OnceLock},
@@ -32,6 +32,7 @@ use matrix_sdk::{
         ClientId, OAuthAuthorizationData, OAuthError as SdkOAuthError, OAuthSession,
     },
     deserialized_responses::RawAnySyncOrStrippedTimelineEvent,
+    event_handler::EventHandlerHandle,
     executor::AbortOnDrop,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
     ruma::{
@@ -87,7 +88,7 @@ use ruma::{
         error::ErrorKind,
     },
     events::{
-        AnyMessageLikeEventContent, AnySyncTimelineEvent,
+        AnyMessageLikeEventContent, AnySyncTimelineEvent, AnyToDeviceEvent,
         GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
         RoomAccountDataEvent as RumaRoomAccountDataEvent,
         direct::DirectEventContent,
@@ -310,6 +311,22 @@ pub trait RoomAccountDataListener: SyncOutsideWasm + SendOutsideWasm {
 pub trait SyncNotificationListener: SyncOutsideWasm + SendOutsideWasm {
     /// Called when a notifying event is received during sync.
     fn on_notification(&self, notification: NotificationItem, room_id: String);
+}
+
+/// A listener for raw to-device events of arbitrary `type`, delivered after
+/// Olm decryption. Used by [`Client::subscribe_to_custom_to_device_events`] to
+/// expose custom Matrix to-device event types (for example Element Call's
+/// `io.element.call.encryption_keys`) that aren't part of the curated
+/// to-device event enums.
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait CustomToDeviceEventListener: SyncOutsideWasm + SendOutsideWasm {
+    /// Called once per matching event.
+    ///
+    /// * `event_type` — the Matrix `type` string of the decrypted event
+    ///   (e.g. `io.element.call.encryption_keys`).
+    /// * `sender` — the sender's user ID, or empty string if missing.
+    /// * `content_json` — the raw JSON of the event's `content` field.
+    fn on_event(&self, event_type: String, sender: String, content_json: String);
 }
 
 #[derive(Clone, Copy, uniffi::Record)]
@@ -2216,6 +2233,121 @@ impl Client {
     pub fn homeserver_capabilities(&self) -> HomeserverCapabilities {
         HomeserverCapabilities::new(self.inner.homeserver_capabilities())
     }
+
+    /// Subscribe to raw to-device events of arbitrary `type`, including custom
+    /// to-device types not represented in the curated to-device event enums.
+    ///
+    /// This is the FFI escape hatch for consumers that need to observe custom
+    /// Matrix to-device event types (for example Element Call's
+    /// `io.element.call.encryption_keys`, used to ship per-participant SFrame
+    /// keys via `ToDeviceKeyTransport`). Events are delivered post-Olm-
+    /// decryption: the `m.room.encrypted` outer wrapper is unwrapped by the
+    /// SDK and the inner plaintext is what reaches the listener.
+    ///
+    /// Live delivery only — to-device events have no cache to bootstrap from.
+    /// Cancel by dropping the returned [`TaskHandle`] (the underlying event
+    /// handler is unregistered automatically).
+    ///
+    /// # Arguments
+    ///
+    /// * `event_types` — list of Matrix event `type` strings (post-decrypt) to
+    ///   deliver. An empty list delivers every to-device event the client
+    ///   receives.
+    /// * `listener` — callback invoked for each matching event with the raw
+    ///   JSON of the event content.
+    pub fn subscribe_to_custom_to_device_events(
+        &self,
+        event_types: Vec<String>,
+        listener: Box<dyn CustomToDeviceEventListener>,
+    ) -> Arc<TaskHandle> {
+        let listener: Arc<dyn CustomToDeviceEventListener> = Arc::from(listener);
+        let filter: Option<Arc<HashSet<String>>> = if event_types.is_empty() {
+            None
+        } else {
+            Some(Arc::new(event_types.into_iter().collect()))
+        };
+
+        // Register a single handler over `Raw<AnyToDeviceEvent>` so we receive
+        // every to-device event regardless of type, then filter inside the
+        // closure. The SDK delivers post-Olm-decryption raw JSON: when an
+        // event arrived as `m.room.encrypted`, the dispatched raw payload is
+        // already the decrypted plaintext.
+        let handler_handle = {
+            let listener = listener.clone();
+            let filter = filter.clone();
+            self.inner.add_event_handler(move |raw: Raw<AnyToDeviceEvent>| {
+                let listener = listener.clone();
+                let filter = filter.clone();
+                async move {
+                    forward_custom_to_device_event(&listener, filter.as_deref(), &raw);
+                }
+            })
+        };
+
+        let guard = ToDeviceEventHandlerGuard {
+            client: (*self.inner).clone(),
+            handle: Some(handler_handle),
+        };
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            // Hold the handler alive until the task is cancelled. Dropping
+            // `guard` removes the registered event handler.
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        })))
+    }
+}
+
+/// Removes a registered to-device event handler from the client when dropped.
+struct ToDeviceEventHandlerGuard {
+    client: MatrixClient,
+    handle: Option<EventHandlerHandle>,
+}
+
+impl Drop for ToDeviceEventHandlerGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.client.remove_event_handler(handle);
+        }
+    }
+}
+
+fn forward_custom_to_device_event(
+    listener: &Arc<dyn CustomToDeviceEventListener>,
+    filter: Option<&HashSet<String>>,
+    raw: &Raw<AnyToDeviceEvent>,
+) {
+    #[derive(serde::Deserialize)]
+    struct Header {
+        #[serde(rename = "type")]
+        event_type: String,
+        #[serde(default)]
+        sender: Option<String>,
+        #[serde(default)]
+        content: Option<Box<serde_json::value::RawValue>>,
+    }
+
+    let header: Header = match raw.deserialize_as_unchecked() {
+        Ok(h) => h,
+        Err(err) => {
+            warn!("subscribe_to_custom_to_device_events: failed to parse event header: {err}");
+            return;
+        }
+    };
+
+    if let Some(allowed) = filter {
+        if !allowed.contains(&header.event_type) {
+            return;
+        }
+    }
+
+    let content_json = header
+        .content
+        .map(|v| v.get().to_owned())
+        .unwrap_or_else(|| "{}".to_owned());
+    let sender = header.sender.unwrap_or_default();
+
+    listener.on_event(header.event_type, sender, content_json);
 }
 
 async fn notification_handler(
