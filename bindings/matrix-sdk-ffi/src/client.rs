@@ -31,7 +31,7 @@ use matrix_sdk::{
     authentication::oauth::{
         ClientId, OAuthAuthorizationData, OAuthError as SdkOAuthError, OAuthSession,
     },
-    deserialized_responses::RawAnySyncOrStrippedTimelineEvent,
+    deserialized_responses::{EncryptionInfo, RawAnySyncOrStrippedTimelineEvent},
     event_handler::EventHandlerHandle,
     executor::AbortOnDrop,
     media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
@@ -2272,16 +2272,27 @@ impl Client {
         // closure. The SDK delivers post-Olm-decryption raw JSON: when an
         // event arrived as `m.room.encrypted`, the dispatched raw payload is
         // already the decrypted plaintext.
+        //
+        // The signature must match one of the patterns the SDK's event
+        // dispatcher recognises. A bare `|raw: Raw<AnyToDeviceEvent>|` is
+        // *not* one of them — it registers but is never invoked. We match the
+        // widget driver's three-arg form (Raw + EncryptionInfo + Client),
+        // which is known to dispatch in this SDK pin (see
+        // `crates/matrix-sdk/src/widget/matrix.rs`).
         let handler_handle = {
             let listener = listener.clone();
             let filter = filter.clone();
-            self.inner.add_event_handler(move |raw: Raw<AnyToDeviceEvent>| {
-                let listener = listener.clone();
-                let filter = filter.clone();
-                async move {
-                    forward_custom_to_device_event(&listener, filter.as_deref(), &raw);
-                }
-            })
+            self.inner.add_event_handler(
+                move |raw: Raw<AnyToDeviceEvent>,
+                      _encryption_info: Option<EncryptionInfo>,
+                      _client: MatrixClient| {
+                    let listener = listener.clone();
+                    let filter = filter.clone();
+                    async move {
+                        forward_custom_to_device_event(&listener, filter.as_deref(), &raw);
+                    }
+                },
+            )
         };
 
         let guard = ToDeviceEventHandlerGuard {
