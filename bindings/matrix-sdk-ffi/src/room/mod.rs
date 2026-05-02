@@ -12,7 +12,13 @@
 // See the License for that specific language governing permissions and
 // limitations under the License.
 
-use std::{collections::HashMap, fs, path::PathBuf, pin::pin, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fs,
+    path::PathBuf,
+    pin::pin,
+    sync::{Arc, Mutex as StdMutex},
+};
 
 use anyhow::{Context, Result};
 use futures_util::{StreamExt, pin_mut};
@@ -22,6 +28,7 @@ use matrix_sdk::{
     PredecessorRoom as SdkPredecessorRoom, RoomHero as SdkRoomHero, RoomMemberships, RoomState,
     SuccessorRoom as SdkSuccessorRoom,
     encryption::LocalTrust,
+    event_handler::EventHandlerHandle,
     room::{
         Room as SdkRoom, RoomMemberRole, edit::EditedContent, power_levels::RoomPowerLevelChanges,
     },
@@ -45,8 +52,9 @@ use ruma::{
             join_rules::JoinRule as RumaJoinRule, message::RoomMessageEventContentWithoutRelation,
         },
     },
+    serde::Raw,
 };
-use tracing::error;
+use tracing::{error, warn};
 
 use self::{power_levels::RoomPowerLevels, room_info::RoomInfo};
 use crate::{
@@ -1269,6 +1277,179 @@ impl Room {
             .into_full_event(self.inner.room_id().to_owned())
             .into())
     }
+
+    /// Subscribe to raw timeline events of arbitrary `type`, including custom
+    /// event types not represented in the curated `MessageLikeEventContent` /
+    /// `StateEventContent` enums.
+    ///
+    /// This is the FFI escape hatch for consumers that need to observe custom
+    /// Matrix event types (for example `io.element.call.encryption_keys`).
+    /// Events are delivered post-Megolm-decryption, after the SDK has unwrapped
+    /// any `m.room.encrypted` payload.
+    ///
+    /// On registration, any matching events already present in the local event
+    /// cache are delivered first ("bootstrap"), then live updates from sync
+    /// follow. Events are de-duplicated by `event_id` across both paths.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_types` — list of Matrix event `type` strings to subscribe to.
+    ///   An empty list delivers every timeline event in the room.
+    /// * `listener` — callback invoked for each matching event with the raw
+    ///   JSON of the event content.
+    ///
+    /// Cancel by dropping the returned [`TaskHandle`] (the underlying event
+    /// handler is unregistered automatically).
+    pub fn subscribe_to_custom_events(
+        &self,
+        event_types: Vec<String>,
+        listener: Box<dyn CustomEventListener>,
+    ) -> Arc<TaskHandle> {
+        let listener: Arc<dyn CustomEventListener> = Arc::from(listener);
+        let inner = self.inner.clone();
+        let target_room_id = self.inner.room_id().to_owned();
+        let filter: Option<Arc<HashSet<String>>> = if event_types.is_empty() {
+            None
+        } else {
+            Some(Arc::new(event_types.into_iter().collect()))
+        };
+
+        let already_emitted: Arc<StdMutex<HashSet<String>>> =
+            Arc::new(StdMutex::new(HashSet::new()));
+
+        // Register the live handler first so we don't miss events that arrive
+        // while we're reading the cache for the bootstrap. The SDK delivers
+        // post-decryption raw JSON via `Raw<AnySyncTimelineEvent>`.
+        let handler_handle = {
+            let listener = listener.clone();
+            let filter = filter.clone();
+            let already_emitted = already_emitted.clone();
+            let target_room_id = target_room_id.clone();
+            self.inner.client().add_event_handler(
+                move |raw: Raw<AnySyncTimelineEvent>, room: SdkRoom| {
+                    let listener = listener.clone();
+                    let filter = filter.clone();
+                    let already_emitted = already_emitted.clone();
+                    let target_room_id = target_room_id.clone();
+                    async move {
+                        if room.room_id() != target_room_id {
+                            return;
+                        }
+                        forward_custom_event(
+                            &listener,
+                            &already_emitted,
+                            filter.as_deref(),
+                            &raw,
+                        );
+                    }
+                },
+            )
+        };
+
+        let guard = EventHandlerGuard {
+            client: self.inner.client(),
+            handle: Some(handler_handle),
+        };
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            // Bootstrap from the room's event cache so consumers don't miss
+            // events that arrived before subscription.
+            match inner.event_cache().await {
+                Ok((cache, _drop_handles)) => match cache.events().await {
+                    Ok(events) => {
+                        for event in events {
+                            forward_custom_event(
+                                &listener,
+                                &already_emitted,
+                                filter.as_deref(),
+                                event.raw(),
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!("subscribe_to_custom_events: failed to read event cache: {err}");
+                    }
+                },
+                Err(err) => {
+                    warn!("subscribe_to_custom_events: event cache not available: {err}");
+                }
+            }
+
+            // Hold the handler alive until the task is cancelled. Dropping
+            // `guard` removes the registered event handler.
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        })))
+    }
+}
+
+/// Removes a registered event handler from the client when dropped.
+struct EventHandlerGuard {
+    client: matrix_sdk::Client,
+    handle: Option<EventHandlerHandle>,
+}
+
+impl Drop for EventHandlerGuard {
+    fn drop(&mut self) {
+        if let Some(handle) = self.handle.take() {
+            self.client.remove_event_handler(handle);
+        }
+    }
+}
+
+fn forward_custom_event(
+    listener: &Arc<dyn CustomEventListener>,
+    already_emitted: &Arc<StdMutex<HashSet<String>>>,
+    filter: Option<&HashSet<String>>,
+    raw: &Raw<AnySyncTimelineEvent>,
+) {
+    #[derive(serde::Deserialize)]
+    struct Header {
+        #[serde(rename = "type")]
+        event_type: String,
+        #[serde(default)]
+        sender: Option<String>,
+        #[serde(default)]
+        event_id: Option<String>,
+        #[serde(default)]
+        origin_server_ts: Option<u64>,
+        #[serde(default)]
+        content: Option<Box<serde_json::value::RawValue>>,
+    }
+
+    let header: Header = match raw.deserialize_as_unchecked() {
+        Ok(h) => h,
+        Err(err) => {
+            warn!("subscribe_to_custom_events: failed to parse event header: {err}");
+            return;
+        }
+    };
+
+    if let Some(allowed) = filter {
+        if !allowed.contains(&header.event_type) {
+            return;
+        }
+    }
+
+    let event_id = header.event_id.unwrap_or_default();
+    if !event_id.is_empty() {
+        let mut emitted = match already_emitted.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if !emitted.insert(event_id.clone()) {
+            return;
+        }
+    }
+
+    let content_json = header
+        .content
+        .map(|v| v.get().to_owned())
+        .unwrap_or_else(|| "{}".to_owned());
+    let sender = header.sender.unwrap_or_default();
+    let timestamp_ms = header.origin_server_ts.unwrap_or(0);
+
+    listener.on_event(header.event_type, sender, content_json, event_id, timestamp_ms);
 }
 
 /// A listener for receiving call decline events in a room.
@@ -1379,6 +1560,31 @@ pub trait TypingNotificationsListener: SyncOutsideWasm + SendOutsideWasm {
 #[matrix_sdk_ffi_macros::export(callback_interface)]
 pub trait IdentityStatusChangeListener: SyncOutsideWasm + SendOutsideWasm {
     fn call(&self, identity_status_change: Vec<IdentityStatusChange>);
+}
+
+/// A listener for raw timeline events of arbitrary `type`, delivered after
+/// Megolm decryption. Used by [`Room::subscribe_to_custom_events`] to expose
+/// custom Matrix event types that aren't part of the curated
+/// `MessageLikeEventContent` / `StateEventContent` enums.
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait CustomEventListener: SyncOutsideWasm + SendOutsideWasm {
+    /// Called once per matching event.
+    ///
+    /// * `event_type` — the Matrix `type` string (e.g.
+    ///   `io.element.call.encryption_keys`).
+    /// * `sender` — the sender's user ID, or empty string if missing.
+    /// * `content_json` — the raw JSON of the event's `content` field.
+    /// * `event_id` — the event ID, or empty string if missing.
+    /// * `timestamp_ms` — the event's `origin_server_ts` in milliseconds, or
+    ///   `0` if missing.
+    fn on_event(
+        &self,
+        event_type: String,
+        sender: String,
+        content_json: String,
+        event_id: String,
+        timestamp_ms: u64,
+    );
 }
 
 #[derive(uniffi::Object)]
