@@ -54,6 +54,8 @@ byteorder.workspace = true
 cfg-if.workspace = true
 ctr = { version = "0.9.2", default-features = false }
 eyeball.workspace = true
+# FLOE streaming file encryption (S1-pinned rev). Apache-2.0; no_std-capable.
+floe-rs = { git = "https://github.com/poljar/floe.git", rev = "c35215d7a27fd3278dc7f6e47cece44a1c9c5d56" }
 futures-core.workspace = true
 futures-util.workspace = true
 hkdf.workspace = true
@@ -80,6 +82,8 @@ ulid = { version = "1.1.4", default-features = false, features = ["std"] }
 uniffi = { workspace = true, optional = true }
 url.workspace = true
 vodozemac.workspace = true
+# Serialize the FLOE header to its 74-byte on-the-wire form (matches floe-rs).
+zerocopy = "0.8.51"
 zeroize = { workspace = true, features = ["zeroize_derive"] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
@@ -93,6 +97,7 @@ anyhow.workspace = true
 assert_matches.workspace = true
 assert_matches2.workspace = true
 futures-executor.workspace = true
+hex = "0.4"
 http.workspace = true
 insta.workspace = true
 matrix-sdk-test.workspace = true
