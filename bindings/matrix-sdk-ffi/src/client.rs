@@ -322,8 +322,8 @@ pub trait SyncNotificationListener: SyncOutsideWasm + SendOutsideWasm {
 pub trait CustomToDeviceEventListener: SyncOutsideWasm + SendOutsideWasm {
     /// Called once per matching event.
     ///
-    /// * `event_type` — the Matrix `type` string of the decrypted event
-    ///   (e.g. `io.element.call.encryption_keys`).
+    /// * `event_type` — the Matrix `type` string of the decrypted event (e.g.
+    ///   `io.element.call.encryption_keys`).
     /// * `sender` — the sender's user ID, or empty string if missing.
     /// * `content_json` — the raw JSON of the event's `content` field.
     fn on_event(&self, event_type: String, sender: String, content_json: String);
@@ -2352,10 +2352,8 @@ fn forward_custom_to_device_event(
         }
     }
 
-    let content_json = header
-        .content
-        .map(|v| v.get().to_owned())
-        .unwrap_or_else(|| "{}".to_owned());
+    let content_json =
+        header.content.map(|v| v.get().to_owned()).unwrap_or_else(|| "{}".to_owned());
     let sender = header.sender.unwrap_or_default();
 
     listener.on_event(header.event_type, sender, content_json);

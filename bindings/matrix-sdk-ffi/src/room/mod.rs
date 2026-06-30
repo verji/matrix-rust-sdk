@@ -1335,21 +1335,13 @@ impl Room {
                         if room.room_id() != target_room_id {
                             return;
                         }
-                        forward_custom_event(
-                            &listener,
-                            &already_emitted,
-                            filter.as_deref(),
-                            &raw,
-                        );
+                        forward_custom_event(&listener, &already_emitted, filter.as_deref(), &raw);
                     }
                 },
             )
         };
 
-        let guard = EventHandlerGuard {
-            client: self.inner.client(),
-            handle: Some(handler_handle),
-        };
+        let guard = EventHandlerGuard { client: self.inner.client(), handle: Some(handler_handle) };
 
         Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
             // Bootstrap from the room's event cache so consumers don't miss
@@ -1442,10 +1434,8 @@ fn forward_custom_event(
         }
     }
 
-    let content_json = header
-        .content
-        .map(|v| v.get().to_owned())
-        .unwrap_or_else(|| "{}".to_owned());
+    let content_json =
+        header.content.map(|v| v.get().to_owned()).unwrap_or_else(|| "{}".to_owned());
     let sender = header.sender.unwrap_or_default();
     let timestamp_ms = header.origin_server_ts.unwrap_or(0);
 
