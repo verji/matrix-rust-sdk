@@ -57,7 +57,6 @@ matrix-sdk = { workspace = true, features = [
     "socks",
     "uniffi",
     "federation-api",
-    "experimental-search"
 ] }
 matrix-sdk-base.workspace = true
 matrix-sdk-common.workspace = true
