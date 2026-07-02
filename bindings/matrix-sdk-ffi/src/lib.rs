@@ -13,6 +13,10 @@ mod content_scanner;
 mod encryption;
 mod error;
 mod event;
+// The FLOE crypto binding runs synchronous (hardware) AES; the WASM/WebCrypto
+// variant is a separate later build, so this is native-only for now.
+#[cfg(not(target_family = "wasm"))]
+mod floe;
 mod helpers;
 mod identity_status_change;
 mod live_locations_observer;
