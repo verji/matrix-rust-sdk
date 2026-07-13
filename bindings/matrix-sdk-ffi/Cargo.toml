@@ -24,8 +24,13 @@ crate-type = [
 ]
 
 [features]
-default = ["bundled-sqlite", "unstable-msc4274", "experimental-element-recent-emojis", "experimental-push-secrets", "experimental-search"]
+default = ["bundled-sqlite", "unstable-msc4274", "experimental-element-recent-emojis", "experimental-push-secrets", "experimental-search", "floe"]
 experimental-search = ["matrix-sdk/experimental-search"]
+# FLOE streaming file encryption bindings. Native-only (synchronous hardware AES);
+# the WASM/WebCrypto variant is a separate later build. Kept in `default` but off
+# for wasm/JS builds, which compile with --no-default-features, so the module is
+# excluded from the wasm binary and from the generated TS/scaffolding.
+floe = []
 # Use SQLite for the session storage.
 sqlite = ["matrix-sdk/sqlite"]
 # Use an embedded version of SQLite.

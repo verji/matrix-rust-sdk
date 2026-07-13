@@ -10,8 +10,10 @@ mod encryption;
 mod error;
 mod event;
 // The FLOE crypto binding runs synchronous (hardware) AES; the WASM/WebCrypto
-// variant is a separate later build, so this is native-only for now.
-#[cfg(not(target_family = "wasm"))]
+// variant is a separate later build, so this is native-only for now. Gated behind
+// the `floe` feature (on by default) so wasm/JS builds, which compile with
+// --no-default-features, leave it out of both the binary and the generated bindings.
+#[cfg(all(feature = "floe", not(target_family = "wasm")))]
 mod floe;
 mod helpers;
 mod identity_status_change;
