@@ -50,4 +50,7 @@ allow-git = [
     # We can release vodozemac whenever we need but let's not block development
     # on releases.
     "https://github.com/matrix-org/vodozemac",
+    # FLOE streaming file encryption; git-pinned until floe-rs publishes to
+    # crates.io. Used by matrix-sdk-crypto's file_encryption/floe.
+    "https://github.com/poljar/floe.git",
 ]
