@@ -47,6 +47,12 @@ use crate::{
     client::futures::SendMediaUploadRequest, config::RequestConfig,
 };
 
+/// Streaming FLOE media (additive to the whole-buffer methods below). Native
+/// only: it drives the sync FLOE crypto core on a blocking thread and streams
+/// over reqwest, neither of which the wasm target supports.
+#[cfg(all(feature = "e2e-encryption", not(target_family = "wasm")))]
+mod floe;
+
 /// A conservative upload speed of 1Mbps
 const DEFAULT_UPLOAD_SPEED: u64 = 125_000;
 /// 5 min minimal upload request timeout, used to clamp the request timeout.
@@ -141,6 +147,10 @@ pub enum MediaError {
     /// Preallocated media already had content, cannot overwrite.
     #[error("preallocated media already had content, cannot overwrite")]
     CannotOverwriteMedia,
+
+    /// A streaming FLOE upload or download failed.
+    #[error("FLOE streaming media error: {0}")]
+    FloeStreaming(String),
 
     /// Local-only media content was not found.
     #[error("local-only media content was not found")]

@@ -145,7 +145,7 @@ sha2.workspace = true
 tempfile.workspace = true
 thiserror.workspace = true
 tokio-stream = { workspace = true, features = ["sync"] }
-tokio-util = "0.7.17"
+tokio-util = { version = "0.7.17", features = ["io", "io-util"] }
 tower = { version = "0.5.2", features = ["util"], optional = true }
 tracing = { workspace = true, features = ["attributes"] }
 uniffi = { workspace = true, optional = true }
@@ -157,6 +157,8 @@ zeroize.workspace = true
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 backon = "1.6.0"
+# tus Upload-Metadata values are base64 (streaming FLOE media, native only).
+base64 = "0.22.1"
 # only activate reqwest's stream feature on non-wasm, the wasm part seems to not
 # support *sending* streams, which makes it useless for us.
 reqwest = { workspace = true, features = ["stream", "gzip", "http2", "rustls"] }

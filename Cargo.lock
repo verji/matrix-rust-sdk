@@ -3497,6 +3497,7 @@ dependencies = [
  "async-trait",
  "axum",
  "backon",
+ "base64",
  "bytes",
  "bytesize",
  "cfg-if",
