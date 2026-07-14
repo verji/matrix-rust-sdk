@@ -25,7 +25,7 @@
 //! Three decoupled granularities apply: the FLOE 256 KiB segment, the tus PATCH
 //! chunk below, and the server's S3 part size are all independent.
 
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
@@ -106,13 +106,61 @@ impl Media {
     /// Download and FLOE-decrypt the blob described by `file`, returning the
     /// plaintext.
     ///
-    /// Fetches the ciphertext from the mxc, following the MSC3860 redirect to
-    /// the object store, and streams it through the FLOE decryptor. The
-    /// in-blob header tag is checked against the key and mxc, so a wrong
-    /// location or key is rejected before any plaintext is produced.
+    /// Buffers the whole plaintext in memory; for multi-gigabyte files prefer
+    /// [`Media::get_floe_media_content_to`], which streams into a sink.
     pub async fn get_floe_media_content(&self, file: &FloeEncryptedFile) -> Result<Vec<u8>> {
+        let reader = self.floe_ciphertext_reader(&file.url).await?;
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || -> Result<Vec<u8>, MediaError> {
+            let mut decryptor =
+                file.decryptor(reader).map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
+            let mut plaintext = Vec::new();
+            decryptor
+                .read_to_end(&mut plaintext)
+                .map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
+            Ok(plaintext)
+        })
+        .await
+        .map_err(|e| floe_err(format!("decrypt task panicked: {e}")))?
+        .map_err(Into::into)
+    }
+
+    /// Download and FLOE-decrypt the blob described by `file`, streaming the
+    /// plaintext into `writer`; returns the number of plaintext bytes written.
+    ///
+    /// **Memory-bounded** — only one 256 KiB segment is held at a time, so this
+    /// scales to multi-gigabyte files without ever buffering the whole
+    /// plaintext (unlike [`Media::get_floe_media_content`]). The in-blob
+    /// header tag is checked against the key and mxc, so a wrong location
+    /// or key is rejected before any plaintext is written.
+    pub async fn get_floe_media_content_to<W>(
+        &self,
+        file: &FloeEncryptedFile,
+        mut writer: W,
+    ) -> Result<u64>
+    where
+        W: Write + Send + 'static,
+    {
+        let reader = self.floe_ciphertext_reader(&file.url).await?;
+        let file = file.clone();
+        tokio::task::spawn_blocking(move || -> Result<u64, MediaError> {
+            let mut decryptor =
+                file.decryptor(reader).map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
+            io::copy(&mut decryptor, &mut writer)
+                .map_err(|e| MediaError::FloeStreaming(e.to_string()))
+        })
+        .await
+        .map_err(|e| floe_err(format!("decrypt task panicked: {e}")))?
+        .map_err(Into::into)
+    }
+
+    /// Fetch the ciphertext for an mxc as a blocking `Read`, following the
+    /// MSC3860 redirect to the object store. The bytes stream lazily — nothing
+    /// is buffered here; the caller drives the (sync) FLOE decryptor over
+    /// it on a blocking thread.
+    async fn floe_ciphertext_reader(&self, mxc: &MxcUri) -> Result<Box<dyn Read + Send>> {
         let http = self.client.http_client();
-        let download_url = self.floe_download_url(&file.url)?;
+        let download_url = self.floe_download_url(mxc)?;
 
         // Follow the MSC3860 redirect explicitly — the SDK's HTTP client may be
         // configured not to auto-follow cross-origin redirects.
@@ -128,23 +176,8 @@ impl Media {
         }
         let resp = resp.error_for_status()?;
 
-        // Bridge the async response body to the sync FLOE decryptor on a blocking
-        // thread; only one 256 KiB segment is held at a time.
         let byte_stream = resp.bytes_stream().map_err(io::Error::other);
-        let reader = SyncIoBridge::new(StreamReader::new(byte_stream));
-        let file = file.clone();
-        tokio::task::spawn_blocking(move || -> Result<Vec<u8>, MediaError> {
-            let mut decryptor =
-                file.decryptor(reader).map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
-            let mut plaintext = Vec::new();
-            decryptor
-                .read_to_end(&mut plaintext)
-                .map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
-            Ok(plaintext)
-        })
-        .await
-        .map_err(|e| floe_err(format!("decrypt task panicked: {e}")))?
-        .map_err(Into::into)
+        Ok(Box::new(SyncIoBridge::new(StreamReader::new(byte_stream))))
     }
 
     /// The media-download URL for an mxc, against this client's homeserver.
