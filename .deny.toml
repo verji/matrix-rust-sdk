@@ -46,4 +46,7 @@ allow-git = [
     # unreleased guess-magnitude overflow fix, needed by the bindings' password
     # strength estimation.
     "https://github.com/shssoichiro/zxcvbn-rs",
+    # FLOE streaming file encryption; git-pinned until floe-rs publishes to
+    # crates.io. Used by matrix-sdk-crypto's file_encryption/floe.
+    "https://github.com/poljar/floe.git",
 ]
