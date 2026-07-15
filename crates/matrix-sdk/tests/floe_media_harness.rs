@@ -1,4 +1,4 @@
-// Copyright 2026 Verji AS
+// Copyright 2026 Verji Tech AS
 //
 // Licensed under the Apache License, Version 2.0.
 
