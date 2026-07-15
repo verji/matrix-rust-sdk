@@ -39,9 +39,9 @@ use url::Url;
 use super::{Media, MediaError};
 use crate::{Error, Result};
 
-/// Bytes per tus `PATCH`. Kept modest so an interrupted upload resumes with
-/// little re-send; independent of the FLOE segment and the S3 part size.
-const TUS_PATCH_CHUNK: usize = 4 * 1024 * 1024;
+/// Bytes per tus `PATCH`. Independent of the FLOE segment and the S3 part size;
+/// larger = fewer round-trips (throughput) but more re-send on interruption.
+const TUS_PATCH_CHUNK: usize = 32 * 1024 * 1024;
 
 impl Media {
     /// FLOE-encrypt the bytes `plaintext` yields and stream the ciphertext to
