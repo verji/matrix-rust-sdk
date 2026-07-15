@@ -91,6 +91,11 @@ tokio = { workspace = true, features = ["time"] }
 
 [target.'cfg(target_family = "wasm")'.dependencies]
 tokio.workspace = true
+# The web AEAD backend for the async FLOE driver: AES-256-GCM via crypto.subtle.
+js-sys.workspace = true
+wasm-bindgen.workspace = true
+wasm-bindgen-futures = "0.4.55"
+web-sys = { workspace = true, features = ["Crypto", "SubtleCrypto", "CryptoKey"] }
 
 [dev-dependencies]
 # The native RustCrypto AES-256-GCM stand-in for the async FLOE seam's tests.

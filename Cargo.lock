@@ -3682,6 +3682,7 @@ dependencies = [
  "http",
  "insta",
  "itertools 0.14.0",
+ "js-sys",
  "js_option",
  "matrix-sdk-common",
  "matrix-sdk-qrcode",
@@ -3707,6 +3708,9 @@ dependencies = [
  "uniffi",
  "url",
  "vodozemac",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
  "zerocopy",
  "zeroize",
 ]

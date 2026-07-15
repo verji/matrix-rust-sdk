@@ -10,5 +10,7 @@ pub use floe::{
     ENC_SEG_LEN, FLOE_V0, FileEncryptionScheme, FloeEncryptedFile, FloeError, FloeJwk,
     FloeStreamDecryptor, FloeStreamEncryptor,
 };
+#[cfg(target_family = "wasm")]
+pub use floe_async::WebCryptoAeadBackend;
 pub use floe_async::{FloeAeadBackend, FloeAsyncDecryptor, FloeAsyncEncryptor, FloeAsyncError};
 pub use key_export::{KeyExportError, decrypt_room_key_export, encrypt_room_key_export};

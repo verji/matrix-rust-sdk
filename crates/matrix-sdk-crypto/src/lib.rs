@@ -81,6 +81,8 @@ pub use error::{
     EventError, MegolmError, OlmError, SessionCreationError, SessionRecipientCollectionError,
     SetRoomSettingsError, SignatureError,
 };
+#[cfg(target_family = "wasm")]
+pub use file_encryption::WebCryptoAeadBackend;
 pub use file_encryption::{
     AttachmentDecryptor, AttachmentEncryptor, DecryptorError, ENC_SEG_LEN, FLOE_V0,
     FileEncryptionScheme, FloeAeadBackend, FloeAsyncDecryptor, FloeAsyncEncryptor, FloeAsyncError,
