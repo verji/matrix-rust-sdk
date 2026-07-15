@@ -612,6 +612,118 @@ impl<B: FloeAeadBackend, const S: u32> FloeAsyncDecryptor<B, S> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// The web AEAD backend — AES-256-GCM via `crypto.subtle`.
+// ---------------------------------------------------------------------------
+
+/// The web ([`crypto.subtle`][SubtleCrypto]) implementation of the async AEAD
+/// seam — the production [`FloeAeadBackend`] for the WASM target.
+///
+/// It delegates each segment's AES-256-GCM to the browser's
+/// hardware-accelerated Web Crypto, awaited through `wasm-bindgen-futures`. The
+/// FLOE framing and one-per-file key schedule stay in Rust (see the module
+/// docs); only this per-segment primitive crosses into JavaScript. Software AES
+/// compiled to WASM is roughly two orders of magnitude slower, so this backend
+/// is what makes multi-gigabyte files viable on the web.
+///
+/// [SubtleCrypto]: https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto
+#[cfg(target_family = "wasm")]
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WebCryptoAeadBackend;
+
+#[cfg(target_family = "wasm")]
+mod webcrypto {
+    use js_sys::{Array, Object, Reflect, Uint8Array};
+    use wasm_bindgen::{JsCast, JsValue};
+    use wasm_bindgen_futures::JsFuture;
+    use web_sys::{Crypto, CryptoKey, SubtleCrypto};
+
+    use super::{FloeAeadBackend, FloeAsyncError, KEY_SIZE, NONCE_LEN, WebCryptoAeadBackend};
+
+    /// Map a rejected Web Crypto `JsValue` onto an [`FloeAsyncError::Aead`].
+    fn aead_err(context: &'static str) -> impl Fn(JsValue) -> FloeAsyncError {
+        move |value| FloeAsyncError::Aead(format!("{context}: {value:?}"))
+    }
+
+    /// The global `crypto.subtle` object.
+    fn subtle() -> Result<SubtleCrypto, FloeAsyncError> {
+        let crypto = Reflect::get(&js_sys::global(), &JsValue::from_str("crypto"))
+            .and_then(|value| value.dyn_into::<Crypto>())
+            .map_err(aead_err("the `crypto` global is unavailable"))?;
+        Ok(crypto.subtle())
+    }
+
+    /// Build the `{ name, iv, additionalData, tagLength }` AES-GCM parameters.
+    fn aes_gcm_params(nonce: &[u8], associated_data: &[u8]) -> Result<Object, FloeAsyncError> {
+        let algorithm = Object::new();
+        let set = |key: &str, value: &JsValue| {
+            Reflect::set(&algorithm, &JsValue::from_str(key), value)
+                .map(|_| ())
+                .map_err(aead_err("building the AES-GCM parameters"))
+        };
+        set("name", &JsValue::from_str("AES-GCM"))?;
+        set("iv", &Uint8Array::from(nonce))?;
+        set("additionalData", &Uint8Array::from(associated_data))?;
+        set("tagLength", &JsValue::from_f64(128.0))?;
+        Ok(algorithm)
+    }
+
+    impl FloeAeadBackend for WebCryptoAeadBackend {
+        type Key = CryptoKey;
+
+        async fn import_key(&self, key: &[u8; KEY_SIZE]) -> Result<CryptoKey, FloeAsyncError> {
+            let usages = Array::new();
+            usages.push(&JsValue::from_str("encrypt"));
+            usages.push(&JsValue::from_str("decrypt"));
+
+            let promise = subtle()?
+                .import_key_with_str("raw", &Uint8Array::from(&key[..]), "AES-GCM", false, &usages)
+                .map_err(aead_err("importKey"))?;
+            JsFuture::from(promise)
+                .await
+                .map_err(aead_err("importKey"))?
+                .dyn_into::<CryptoKey>()
+                .map_err(aead_err("importKey returned a non-CryptoKey"))
+        }
+
+        async fn seal(
+            &self,
+            key: &CryptoKey,
+            nonce: &[u8; NONCE_LEN],
+            associated_data: &[u8],
+            plaintext: &[u8],
+        ) -> Result<Vec<u8>, FloeAsyncError> {
+            let params = aes_gcm_params(nonce, associated_data)?;
+            let promise = subtle()?
+                .encrypt_with_object_and_buffer_source(&params, key, &Uint8Array::from(plaintext))
+                .map_err(aead_err("encrypt"))?;
+            let result = JsFuture::from(promise).await.map_err(aead_err("encrypt"))?;
+            Ok(Uint8Array::new(&result).to_vec())
+        }
+
+        async fn open(
+            &self,
+            key: &CryptoKey,
+            nonce: &[u8; NONCE_LEN],
+            associated_data: &[u8],
+            ciphertext_and_tag: &[u8],
+        ) -> Result<Vec<u8>, FloeAsyncError> {
+            let params = aes_gcm_params(nonce, associated_data)?;
+            let promise = subtle()?
+                .decrypt_with_object_and_buffer_source(
+                    &params,
+                    key,
+                    &Uint8Array::from(ciphertext_and_tag),
+                )
+                .map_err(aead_err("decrypt"))?;
+            // A rejected promise here is an authentication failure (a bad tag).
+            let result =
+                JsFuture::from(promise).await.map_err(aead_err("decrypt (authentication)"))?;
+            Ok(Uint8Array::new(&result).to_vec())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use aes_gcm::{
