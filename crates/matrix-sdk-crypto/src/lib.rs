@@ -83,9 +83,9 @@ pub use error::{
 };
 pub use file_encryption::{
     AttachmentDecryptor, AttachmentEncryptor, DecryptorError, ENC_SEG_LEN, FLOE_V0,
-    FileEncryptionScheme, FloeEncryptedFile, FloeError, FloeJwk, FloeStreamDecryptor,
-    FloeStreamEncryptor, KeyExportError, MediaEncryptionInfo, decrypt_room_key_export,
-    encrypt_room_key_export,
+    FileEncryptionScheme, FloeAeadBackend, FloeAsyncDecryptor, FloeAsyncEncryptor, FloeAsyncError,
+    FloeEncryptedFile, FloeError, FloeJwk, FloeStreamDecryptor, FloeStreamEncryptor,
+    KeyExportError, MediaEncryptionInfo, decrypt_room_key_export, encrypt_room_key_export,
 };
 pub use gossiping::{GossipRequest, GossippedSecret};
 pub use identities::{

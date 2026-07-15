@@ -93,6 +93,9 @@ tokio = { workspace = true, features = ["time"] }
 tokio.workspace = true
 
 [dev-dependencies]
+# The native RustCrypto AES-256-GCM stand-in for the async FLOE seam's tests.
+# Only the AES cipher and the allocating AEAD API are needed (no key/nonce RNG).
+aes-gcm = { version = "0.11.0", default-features = false, features = ["aes", "alloc"] }
 anyhow.workspace = true
 assert_matches.workspace = true
 assert_matches2.workspace = true

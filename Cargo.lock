@@ -3660,6 +3660,7 @@ name = "matrix-sdk-crypto"
 version = "0.18.0"
 dependencies = [
  "aes 0.8.4",
+ "aes-gcm",
  "anyhow",
  "aquamarine",
  "as_variant",

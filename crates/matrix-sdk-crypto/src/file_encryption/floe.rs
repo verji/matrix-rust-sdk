@@ -228,7 +228,10 @@ impl<'de> Deserialize<'de> for FileEncryptionScheme {
 }
 
 /// Build the FLOE JWK `oct` block for a freshly generated root key.
-fn floe_jwk(key: &[u8; KEY_SIZE]) -> FloeJwk {
+///
+/// Shared with the async ([`super::floe_async`]) driver so the JWK's `alg`,
+/// `key_ops` and encoding stay defined in exactly one place.
+pub(super) fn floe_jwk(key: &[u8; KEY_SIZE]) -> FloeJwk {
     FloeJwk {
         kty: "oct".to_owned(),
         alg: FLOE_ALG.to_owned(),
