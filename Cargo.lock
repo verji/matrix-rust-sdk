@@ -3758,6 +3758,7 @@ dependencies = [
  "futures-executor",
  "futures-util",
  "jni",
+ "js-sys",
  "jvm-getter",
  "language-tags",
  "log-panics",
@@ -3776,6 +3777,7 @@ dependencies = [
  "sentry",
  "sentry-tracing",
  "serde",
+ "serde-wasm-bindgen",
  "serde_json",
  "similar-asserts",
  "tempfile",
@@ -3789,6 +3791,8 @@ dependencies = [
  "url",
  "uuid",
  "vergen-gitcl",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
  "zeroize",
 ]
 

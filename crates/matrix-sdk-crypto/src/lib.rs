@@ -84,10 +84,11 @@ pub use error::{
 #[cfg(target_family = "wasm")]
 pub use file_encryption::WebCryptoAeadBackend;
 pub use file_encryption::{
-    AttachmentDecryptor, AttachmentEncryptor, DecryptorError, ENC_SEG_LEN, FLOE_V0,
-    FileEncryptionScheme, FloeAeadBackend, FloeAsyncDecryptor, FloeAsyncEncryptor, FloeAsyncError,
-    FloeEncryptedFile, FloeError, FloeJwk, FloeStreamDecryptor, FloeStreamEncryptor,
-    KeyExportError, MediaEncryptionInfo, decrypt_room_key_export, encrypt_room_key_export,
+    AttachmentDecryptor, AttachmentEncryptor, DecryptorError, ENC_SEG_LEN, FLOE_HEADER_LEN,
+    FLOE_V0, FLOE_V0_PLAINTEXT_SEG_LEN, FileEncryptionScheme, FloeAeadBackend, FloeAsyncDecryptor,
+    FloeAsyncEncryptor, FloeAsyncError, FloeEncryptedFile, FloeError, FloeJwk, FloeStreamDecryptor,
+    FloeStreamEncryptor, KeyExportError, MediaEncryptionInfo, decrypt_room_key_export,
+    encrypt_room_key_export,
 };
 pub use gossiping::{GossipRequest, GossippedSecret};
 pub use identities::{

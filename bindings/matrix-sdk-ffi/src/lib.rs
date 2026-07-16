@@ -10,11 +10,18 @@ mod encryption;
 mod error;
 mod event;
 // The FLOE crypto binding runs synchronous (hardware) AES; the WASM/WebCrypto
-// variant is a separate later build, so this is native-only for now. Gated behind
-// the `floe` feature (on by default) so wasm/JS builds, which compile with
-// --no-default-features, leave it out of both the binary and the generated bindings.
+// variant is a separate later build, so this is native-only for now. Gated
+// behind the `floe` feature (on by default) so wasm/JS builds, which compile
+// with --no-default-features, leave it out of both the binary and the generated
+// bindings.
 #[cfg(all(feature = "floe", not(target_family = "wasm")))]
 mod floe;
+// The async WebCrypto FLOE surface for the wasm/JS target. Target-gated (not
+// feature-gated) so it is present in the wasm binary but absent from the native
+// codegen build that generates the uniffi bindings — the raw `#[wasm_bindgen]`
+// exports are picked up by the separate `wasm-bindgen` pass instead.
+#[cfg(target_family = "wasm")]
+mod floe_wasm;
 mod helpers;
 mod identity_status_change;
 mod live_locations_observer;
