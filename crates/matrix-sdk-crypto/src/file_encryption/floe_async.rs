@@ -90,6 +90,17 @@ const KDF_ID_SHA384: u8 = 0;
 /// [`ENC_SEG_LEN`]), so every file below that lives under a single DEK.
 const DEFAULT_ROTATION_MASK: u64 = !((1u64 << 20) - 1);
 
+/// The FLOE header length in bytes (74): parameters ‖ IV ‖ header tag. A
+/// streaming decryptor reads exactly this many bytes off the front of a blob
+/// before the first segment.
+pub const FLOE_HEADER_LEN: usize = HEADER_LEN;
+
+/// The plaintext bytes carried by one full [`FLOE_V0`] segment —
+/// [`ENC_SEG_LEN`] minus the per-segment framing overhead. A streaming
+/// encryptor feeds [`FloeAsyncEncryptor::encrypt_segment`] this many plaintext
+/// bytes per non-final segment.
+pub const FLOE_V0_PLAINTEXT_SEG_LEN: usize = ENC_SEG_LEN as usize - SEG_OVERHEAD;
+
 /// Error type for the async FLOE driver.
 #[derive(Debug, Error)]
 pub enum FloeAsyncError {
@@ -556,6 +567,12 @@ impl<B: FloeAeadBackend, const S: u32> FloeAsyncDecryptor<B, S> {
             epoch: None,
             done: false,
         })
+    }
+
+    /// Whether the final segment has been decrypted. A streaming caller stops
+    /// feeding frames once this is `true`.
+    pub fn is_done(&self) -> bool {
+        self.done
     }
 
     /// Decrypt the next encrypted segment frame from the blob body.
