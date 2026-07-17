@@ -213,5 +213,10 @@ required-features = ["testing"]
 name = "floe_media_demo"
 required-features = ["e2e-encryption", "testing"]
 
+# FLOE Phase 2 demonstrator: the encrypted file to/from a real Matrix room.
+[[example]]
+name = "floe_room_demo"
+required-features = ["e2e-encryption", "testing"]
+
 [lints]
 workspace = true
