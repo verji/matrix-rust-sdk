@@ -39,6 +39,9 @@ use matrix_sdk_base::crypto::{
     FloeJwk as CoreFloeJwk, FloeStreamEncryptor,
 };
 use matrix_sdk_common::{SendOutsideWasm, SyncOutsideWasm};
+use url::Url;
+
+use crate::client::Client;
 
 /// The size of the plaintext/ciphertext chunk the pump moves per step. One FLOE
 /// segment is 256 KiB, so a single-segment buffer keeps the working set small.
@@ -171,6 +174,29 @@ impl Read for CallbackReader {
     }
 }
 
+/// Adapts a host [`FloeByteSink`] into a [`Write`], forwarding each written
+/// chunk straight to the sink.
+struct CallbackWriter {
+    sink: Box<dyn FloeByteSink>,
+}
+
+impl CallbackWriter {
+    fn new(sink: Box<dyn FloeByteSink>) -> Self {
+        Self { sink }
+    }
+}
+
+impl std::io::Write for CallbackWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.sink.write_chunk(buf.to_vec()).map_err(IoError::other)?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
 /// Drive `reader` to exhaustion, handing each chunk to the sink.
 fn pump(reader: &mut dyn Read, sink: &dyn FloeByteSink) -> Result<(), FloeError> {
     let mut buf = vec![0u8; PUMP_BUF_LEN];
@@ -222,6 +248,54 @@ fn floe_decrypt(
     let mut decryptor = core.decryptor(reader)?;
 
     pump(&mut decryptor, sink.as_ref())
+}
+
+/// FLOE media transport — the streaming upload/download methods, exposed on the
+/// FFI [`Client`] so bindings get the full flow (reserve mxc, resumable upload,
+/// redirect download) and not just the crypto core. The plaintext is streamed
+/// through the host `source`/`sink` callbacks; the whole file never crosses the
+/// FFI boundary.
+#[matrix_sdk_ffi_macros::export]
+impl Client {
+    /// FLOE-encrypt the bytes from `source` and stream the ciphertext to the
+    /// resumable-upload `front_door` (tus 1.0 → S3), reserving an mxc and
+    /// returning the [`FloeEncryptedFile`] block to embed in the room-encrypted
+    /// event.
+    pub async fn floe_upload(
+        &self,
+        source: Box<dyn FloeByteSource>,
+        front_door: String,
+    ) -> Result<FloeEncryptedFile, FloeError> {
+        let front_door = Url::parse(&front_door)
+            .map_err(|e| FloeError::Io { message: format!("invalid front door url: {e}") })?;
+        let reader = CallbackReader::new(source);
+        let file = self
+            .inner
+            .media()
+            .upload_floe(reader, &front_door)
+            .await
+            .map_err(|e| FloeError::Io { message: e.to_string() })?;
+        Ok(file.into())
+    }
+
+    /// Download and FLOE-decrypt the blob described by `file`, following the
+    /// MSC3860 redirect to the object store and streaming the recovered
+    /// plaintext to `sink`. Memory-bounded — one 256 KiB segment is held at a
+    /// time.
+    pub async fn floe_download(
+        &self,
+        file: FloeEncryptedFile,
+        sink: Box<dyn FloeByteSink>,
+    ) -> Result<(), FloeError> {
+        let core = file.into_core()?;
+        let writer = CallbackWriter::new(sink);
+        self.inner
+            .media()
+            .get_floe_media_content_to(&core, writer)
+            .await
+            .map_err(|e| FloeError::Io { message: e.to_string() })?;
+        Ok(())
+    }
 }
 
 impl From<CoreFloeEncryptedFile> for FloeEncryptedFile {
@@ -370,5 +444,17 @@ mod tests {
         let sink = Arc::new(VecSink::default());
         let result = floe_decrypt(file, VecSource::boxed(&blob_bytes), Box::new(sink));
         assert!(matches!(result, Err(FloeError::Decrypt { .. })));
+    }
+
+    #[test]
+    fn callback_writer_forwards_chunks() {
+        use std::io::Write as _;
+
+        let sink = Arc::new(VecSink::default());
+        let mut writer = CallbackWriter::new(Box::new(sink.clone()));
+        writer.write_all(b"hello ").unwrap();
+        writer.write_all(b"world").unwrap();
+        writer.flush().unwrap();
+        assert_eq!(sink.take(), b"hello world");
     }
 }
