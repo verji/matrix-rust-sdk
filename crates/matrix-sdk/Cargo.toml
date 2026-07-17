@@ -206,5 +206,12 @@ webpki-roots = "1.0.6"
 name = "integration"
 required-features = ["testing"]
 
+# FLOE huge-file media round-trip demonstrator. Uses the no-login MockClientBuilder
+# (testing) and the native streaming FLOE media path (e2e-encryption), so it is
+# skipped by default builds and only compiled when both features are enabled.
+[[example]]
+name = "floe_media_demo"
+required-features = ["e2e-encryption", "testing"]
+
 [lints]
 workspace = true
