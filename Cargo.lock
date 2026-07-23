@@ -3860,6 +3860,7 @@ dependencies = [
  "vergen-gitcl",
  "wasm-bindgen",
  "wasm-bindgen-futures",
+ "web-sys",
  "zeroize",
  "zxcvbn",
 ]
