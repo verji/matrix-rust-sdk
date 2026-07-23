@@ -28,6 +28,7 @@
 //! Only one ≤256 KiB chunk crosses the boundary at a time, so a multi-gigabyte
 //! file is never buffered whole.
 
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use js_sys::{Error as JsError, Reflect, Uint8Array};
 use matrix_sdk::ruma::{
     OwnedMxcUri,
@@ -426,4 +427,170 @@ pub async fn floe_download(
         }
     }
     Ok(())
+}
+
+/// Bytes accumulated per tus `PATCH`. Independent of the FLOE segment and the
+/// server's S3 part size; larger means fewer round-trips but a bigger in-flight
+/// buffer. Kept modest on the web to bound the working set.
+const WASM_TUS_PATCH_CHUNK: usize = 8 * 1024 * 1024;
+
+/// Padded standard base64 for tus `Upload-Metadata` values (as the native path;
+/// tusd expects RFC 4648 with padding, unlike ruma's unpadded `Base64`).
+fn base64_standard(bytes: &[u8]) -> String {
+    BASE64.encode(bytes)
+}
+
+/// Reserve an mxc via MSC2246 (`POST .../_matrix/media/v1/create`), returning
+/// the `content_uri`.
+async fn reserve_mxc(create_url: &str, auth_token: Option<&str>) -> Result<OwnedMxcUri, JsValue> {
+    let headers = web_sys::Headers::new()?;
+    if let Some(token) = auth_token {
+        headers.set("Authorization", &format!("Bearer {token}"))?;
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_headers(&headers);
+    let request = web_sys::Request::new_with_str_and_init(create_url, &init)?;
+
+    let response: web_sys::Response = fetch_request(&request).await?.dyn_into()?;
+    if !response.ok() {
+        return Err(error(&format!("mxc reserve failed: HTTP {}", response.status())));
+    }
+    let json = JsFuture::from(response.json()?).await?;
+    let content_uri = Reflect::get(&json, &JsValue::from_str("content_uri"))?
+        .as_string()
+        .ok_or_else(|| error("mxc create response has no content_uri"))?;
+    Ok(OwnedMxcUri::from(content_uri))
+}
+
+/// tus 1.0 `creation` with deferred length, tagging the upload with its mxc.
+/// Returns the created upload resource URL (resolved against `front_door`).
+async fn tus_create(
+    front_door: &str,
+    media_id: &str,
+    auth_token: Option<&str>,
+) -> Result<String, JsValue> {
+    let headers = web_sys::Headers::new()?;
+    headers.set("Tus-Resumable", "1.0.0")?;
+    headers.set("Upload-Defer-Length", "1")?;
+    headers.set("Upload-Metadata", &format!("mxc {}", base64_standard(media_id.as_bytes())))?;
+    if let Some(token) = auth_token {
+        headers.set("Authorization", &format!("Bearer {token}"))?;
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_method("POST");
+    init.set_headers(&headers);
+    let request = web_sys::Request::new_with_str_and_init(front_door, &init)?;
+
+    let response: web_sys::Response = fetch_request(&request).await?.dyn_into()?;
+    if !response.ok() {
+        return Err(error(&format!("tus create failed: HTTP {}", response.status())));
+    }
+    let location = response
+        .headers()
+        .get("Location")?
+        .ok_or_else(|| error("tus create returned no Location"))?;
+    // The Location may be relative; resolve it against the front door.
+    web_sys::Url::new_with_base(&location, front_door)
+        .map(|u| u.href())
+        .map_err(|_| error("tus create returned a malformed Location"))
+}
+
+/// tus `PATCH` one chunk at `offset`; on the final chunk, declare the total
+/// length (resolving the deferred length). Returns the new offset.
+async fn tus_patch(
+    location: &str,
+    offset: u64,
+    chunk: &[u8],
+    is_final: bool,
+    auth_token: Option<&str>,
+) -> Result<u64, JsValue> {
+    let new_offset = offset + chunk.len() as u64;
+    let headers = web_sys::Headers::new()?;
+    headers.set("Tus-Resumable", "1.0.0")?;
+    headers.set("Upload-Offset", &offset.to_string())?;
+    headers.set("Content-Type", "application/offset+octet-stream")?;
+    if is_final {
+        headers.set("Upload-Length", &new_offset.to_string())?;
+    }
+    if let Some(token) = auth_token {
+        headers.set("Authorization", &format!("Bearer {token}"))?;
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_method("PATCH");
+    init.set_headers(&headers);
+    let body = Uint8Array::from(chunk);
+    init.set_body(body.as_ref());
+    let request = web_sys::Request::new_with_str_and_init(location, &init)?;
+
+    let response: web_sys::Response = fetch_request(&request).await?.dyn_into()?;
+    if !response.ok() {
+        return Err(error(&format!("tus PATCH failed: HTTP {}", response.status())));
+    }
+    Ok(new_offset)
+}
+
+/// Reserve an mxc, FLOE-encrypt the bytes from `source`, and stream the
+/// ciphertext to the resumable-upload `front_door` (tus 1.0 → S3), returning
+/// the FLOE `file` block to embed in the room-encrypted event.
+///
+/// A fresh random root key is generated and the reserved mxc is bound as
+/// associated data, so the blob only validates when served from that location.
+/// The plaintext is consumed as a stream and the ciphertext is sent in
+/// `WASM_TUS_PATCH_CHUNK`-sized PATCHes — the whole file is never buffered.
+/// `homeserver` is where the mxc is reserved; `auth_token`, when given, is sent
+/// as a bearer token to both the homeserver and the front door.
+#[wasm_bindgen(js_name = floeUpload)]
+pub async fn floe_upload(
+    source: FloeByteSource,
+    front_door: String,
+    homeserver: String,
+    auth_token: Option<String>,
+) -> Result<FloeEncryptedFileJs, JsValue> {
+    let auth = auth_token.as_deref();
+
+    // Reserve the mxc (MSC2246); its media id tags the tus upload so the front
+    // door registers the stored object under this mxc.
+    let create_url = format!("{}/_matrix/media/v1/create", homeserver.trim_end_matches('/'));
+    let mxc = reserve_mxc(&create_url, auth).await?;
+    let (_, media_id) = mxc.parts().map_err(|e| error(&format!("malformed reserved mxc: {e}")))?;
+    let media_id = media_id.to_owned();
+
+    let mut encryptor =
+        FloeAsyncEncryptor::<WebCryptoAeadBackend, ENC_SEG_LEN>::new(WebCryptoAeadBackend, &mxc);
+    let location = tus_create(&front_door, &media_id, auth).await?;
+
+    // Accumulate ciphertext and flush full PATCH chunks; the final flush declares
+    // the total length. Header first, then segments with a one-segment look-ahead
+    // so the final segment's framing is known before it is encrypted.
+    let mut offset: u64 = 0;
+    let mut buffer: Vec<u8> = Vec::with_capacity(WASM_TUS_PATCH_CHUNK + ENC_SEG_LEN as usize);
+    buffer.extend_from_slice(encryptor.header());
+
+    let chunk_size = FLOE_V0_PLAINTEXT_SEG_LEN;
+    let mut current = fill(&source, chunk_size).await?;
+    loop {
+        let next =
+            if current.len() == chunk_size { fill(&source, chunk_size).await? } else { Vec::new() };
+        let is_final = next.is_empty();
+        let frame = encryptor.encrypt_segment(&current, is_final).await.map_err(floe_error)?;
+        buffer.extend_from_slice(&frame);
+        // Flush only while strictly more than a chunk remains, so a flushed chunk
+        // is never the last one — the final PATCH (below) declares the length.
+        while buffer.len() > WASM_TUS_PATCH_CHUNK {
+            let chunk: Vec<u8> = buffer.drain(..WASM_TUS_PATCH_CHUNK).collect();
+            offset = tus_patch(&location, offset, &chunk, false, auth).await?;
+        }
+        if is_final {
+            break;
+        }
+        current = next;
+    }
+    // The remainder is non-empty (the header alone is 74 bytes) and declares the
+    // final length.
+    tus_patch(&location, offset, &buffer, true, auth).await?;
+
+    let file = WasmFloeEncryptedFile::from(encryptor.finish());
+    let value = serde_wasm_bindgen::to_value(&file).map_err(|e| error(&e.to_string()))?;
+    Ok(value.unchecked_into())
 }

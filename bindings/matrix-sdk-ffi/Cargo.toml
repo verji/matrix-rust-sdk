@@ -122,6 +122,8 @@ uniffi = { workspace = true, features = ["wasm-unstable-single-threaded"] }
 futures-executor.workspace = true
 # The async WebCrypto FLOE surface (floe_wasm): raw wasm-bindgen exports over the
 # matrix-sdk-crypto async FLOE driver + WebCryptoAeadBackend.
+# Padded standard base64 for the tus `Upload-Metadata` value (as the native path).
+base64 = "0.22.1"
 wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = "0.4"
 js-sys = { workspace = true }
@@ -138,6 +140,7 @@ web-sys = { workspace = true, features = [
     "Request",
     "RequestInit",
     "Headers",
+    "Url",
 ] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
