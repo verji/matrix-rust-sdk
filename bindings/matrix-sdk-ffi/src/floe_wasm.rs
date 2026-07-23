@@ -28,7 +28,7 @@
 //! Only one ≤256 KiB chunk crosses the boundary at a time, so a multi-gigabyte
 //! file is never buffered whole.
 
-use js_sys::{Error as JsError, Uint8Array};
+use js_sys::{Error as JsError, Reflect, Uint8Array};
 use matrix_sdk::ruma::{
     OwnedMxcUri,
     serde::{Base64, base64::UrlSafe},
@@ -40,6 +40,7 @@ use matrix_sdk_base::crypto::{
 };
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::{JsCast, prelude::*};
+use wasm_bindgen_futures::JsFuture;
 
 /// TypeScript declarations for the host-implemented interfaces and the FLOE
 /// records, so the generated surface matches the native binding's shape.
@@ -263,6 +264,158 @@ pub async fn floe_decrypt(
 
     loop {
         let frame = fill(&source, ENC_SEG_LEN as usize).await?;
+        if frame.is_empty() {
+            break;
+        }
+        let plaintext = decryptor.decrypt_segment(&frame).await.map_err(floe_error)?;
+        write_all(&sink, &plaintext).await?;
+        if decryptor.is_done() {
+            break;
+        }
+    }
+    Ok(())
+}
+
+// --- Media transport ---------------------------------------------------------
+//
+// The web counterpart of the native `Client::floe_download`/`floe_upload`
+// (`super::floe`): the transport does the HTTP itself, so the host supplies
+// only the plaintext sink/source, and the whole file never crosses the
+// boundary. On the web the ciphertext body is streamed through the browser's
+// `fetch` + `ReadableStream` (reqwest's wasm backend cannot stream a response
+// body), one ~256 KiB segment held at a time. The homeserver/front-door and
+// auth are passed explicitly rather than pulled from a client handle — this raw
+// `#[wasm_bindgen]` surface has none, unlike the native binding's FFI `Client`.
+
+/// Call the global `fetch` from either a `Window` or a `WorkerGlobalScope` —
+/// the SDK runs in a Web Worker on the web, where `window()` is absent.
+async fn fetch_request(request: &web_sys::Request) -> Result<JsValue, JsValue> {
+    let global = js_sys::global();
+    if let Ok(window) = global.clone().dyn_into::<web_sys::Window>() {
+        JsFuture::from(window.fetch_with_request(request)).await
+    } else if let Ok(scope) = global.dyn_into::<web_sys::WorkerGlobalScope>() {
+        JsFuture::from(scope.fetch_with_request(request)).await
+    } else {
+        Err(error("no fetch available: global scope is neither Window nor WorkerGlobalScope"))
+    }
+}
+
+/// Reads a `fetch` response body (`ReadableStream`) and hands out an exact
+/// number of bytes per call, buffering the remainder of each network chunk.
+/// Returns fewer than `wanted` bytes only at the true end of the stream. This
+/// lets the FLOE decryptor consume the ciphertext in header- and segment-sized
+/// reads even though the network chunks don't align to those boundaries.
+struct CiphertextStream {
+    reader: web_sys::ReadableStreamDefaultReader,
+    buffer: Vec<u8>,
+    pos: usize,
+    done: bool,
+}
+
+impl CiphertextStream {
+    fn new(reader: web_sys::ReadableStreamDefaultReader) -> Self {
+        Self { reader, buffer: Vec::new(), pos: 0, done: false }
+    }
+
+    async fn read_exact(&mut self, wanted: usize) -> Result<Vec<u8>, JsValue> {
+        let mut out: Vec<u8> = Vec::with_capacity(wanted);
+        while out.len() < wanted {
+            if self.pos >= self.buffer.len() {
+                if self.done {
+                    break;
+                }
+                let result = JsFuture::from(self.reader.read()).await?;
+                let is_done =
+                    Reflect::get(&result, &JsValue::from_str("done"))?.as_bool().unwrap_or(false);
+                if is_done {
+                    self.done = true;
+                    break;
+                }
+                let value = Reflect::get(&result, &JsValue::from_str("value"))?;
+                let chunk: Uint8Array = value
+                    .dyn_into()
+                    .map_err(|_| error("response stream chunk is not a Uint8Array"))?;
+                let n = chunk.length() as usize;
+                self.buffer.resize(n, 0);
+                chunk.copy_to(&mut self.buffer[..]);
+                self.pos = 0;
+                if n == 0 {
+                    continue;
+                }
+            }
+            let take = (self.buffer.len() - self.pos).min(wanted - out.len());
+            out.extend_from_slice(&self.buffer[self.pos..self.pos + take]);
+            self.pos += take;
+        }
+        Ok(out)
+    }
+}
+
+/// Download the FLOE blob described by `file` from `homeserver` and stream the
+/// recovered plaintext to `sink`.
+///
+/// The mxc in `file.url` is resolved to the homeserver media-download endpoint;
+/// `fetch` follows the MSC3860 redirect to the object store and the ciphertext
+/// body is streamed through the async FLOE decryptor into `sink`, one 256 KiB
+/// segment at a time — the whole file is never buffered. `auth_token`, when
+/// given, is sent as a bearer token on the homeserver request. The header is
+/// validated against the file's key and `url` before any segment is decrypted;
+/// a wrong key/`url` or a truncated stream is an error.
+#[wasm_bindgen(js_name = floeDownload)]
+pub async fn floe_download(
+    file: FloeEncryptedFileJs,
+    homeserver: String,
+    auth_token: Option<String>,
+    sink: FloeByteSink,
+) -> Result<(), JsValue> {
+    let file: WasmFloeEncryptedFile =
+        serde_wasm_bindgen::from_value(file.into()).map_err(|e| error(&e.to_string()))?;
+    let core = file.into_core()?;
+    if core.v != FLOE_V0 {
+        return Err(error(&format!("unexpected FLOE version: {}", core.v)));
+    }
+
+    // Build the homeserver media-download URL from the mxc (matches the native
+    // transport's path); `fetch` follows the MSC3860 redirect to the store.
+    let (server, media_id) = core.url.parts().map_err(|e| error(&format!("malformed mxc: {e}")))?;
+    let download_url = format!(
+        "{}/_matrix/media/v3/download/{}/{}",
+        homeserver.trim_end_matches('/'),
+        server,
+        media_id
+    );
+
+    let headers = web_sys::Headers::new()?;
+    if let Some(token) = &auth_token {
+        headers.set("Authorization", &format!("Bearer {token}"))?;
+    }
+    let init = web_sys::RequestInit::new();
+    init.set_headers(&headers);
+    let request = web_sys::Request::new_with_str_and_init(&download_url, &init)?;
+
+    let response: web_sys::Response = fetch_request(&request).await?.dyn_into()?;
+    if !response.ok() {
+        return Err(error(&format!("media download failed: HTTP {}", response.status())));
+    }
+    let body =
+        response.body().ok_or_else(|| error("media download response has no body stream"))?;
+    let reader: web_sys::ReadableStreamDefaultReader = body.get_reader().dyn_into()?;
+    let mut stream = CiphertextStream::new(reader);
+
+    let key: [u8; 32] = *core.key.k.as_inner();
+    let associated_data = core.url.as_bytes().to_vec();
+
+    let header = stream.read_exact(FLOE_HEADER_LEN).await?;
+    let mut decryptor = FloeAsyncDecryptor::<WebCryptoAeadBackend, ENC_SEG_LEN>::new(
+        WebCryptoAeadBackend,
+        &header,
+        &key,
+        &associated_data,
+    )
+    .map_err(floe_error)?;
+
+    loop {
+        let frame = stream.read_exact(ENC_SEG_LEN as usize).await?;
         if frame.is_empty() {
             break;
         }

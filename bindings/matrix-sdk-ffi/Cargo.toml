@@ -126,6 +126,19 @@ wasm-bindgen = { workspace = true }
 wasm-bindgen-futures = "0.4"
 js-sys = { workspace = true }
 serde-wasm-bindgen = "0.6"
+# fetch + ReadableStream for the FLOE media transport (floeDownload/floeUpload):
+# stream the ciphertext body chunk-at-a-time. `WorkerGlobalScope` because the SDK
+# runs in a Web Worker on the web, where `window()` is absent.
+web-sys = { workspace = true, features = [
+    "Window",
+    "WorkerGlobalScope",
+    "Response",
+    "ReadableStream",
+    "ReadableStreamDefaultReader",
+    "Request",
+    "RequestInit",
+    "Headers",
+] }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 async-compat.workspace = true
