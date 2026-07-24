@@ -54,8 +54,10 @@ byteorder.workspace = true
 cfg-if.workspace = true
 ctr = { version = "0.9.2", default-features = false }
 eyeball.workspace = true
-# FLOE streaming file encryption (S1-pinned rev). Apache-2.0; no_std-capable.
-floe-rs = { git = "https://github.com/poljar/floe.git", rev = "c35215d7a27fd3278dc7f6e47cece44a1c9c5d56" }
+# FLOE streaming file encryption. Apache-2.0; no_std-capable. Pinned to the
+# verji fork for its `async` streaming surface (the async encryptor/decryptor
+# the web AEAD path drives); upstream once that surface lands in poljar/floe.
+floe-rs = { git = "https://github.com/verji/floe-rs.git", rev = "be6c01e7f186e35cb7d06e6aa96d1ffdf415be41", features = ["async"] }
 futures-core.workspace = true
 futures-util.workspace = true
 hkdf.workspace = true

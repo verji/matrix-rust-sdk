@@ -2128,7 +2128,7 @@ dependencies = [
 [[package]]
 name = "floe-rs"
 version = "0.1.0"
-source = "git+https://github.com/poljar/floe.git?rev=c35215d7a27fd3278dc7f6e47cece44a1c9c5d56#c35215d7a27fd3278dc7f6e47cece44a1c9c5d56"
+source = "git+https://github.com/verji/floe-rs.git?rev=be6c01e7f186e35cb7d06e6aa96d1ffdf415be41#be6c01e7f186e35cb7d06e6aa96d1ffdf415be41"
 dependencies = [
  "aead 0.6.1",
  "aes-gcm",
