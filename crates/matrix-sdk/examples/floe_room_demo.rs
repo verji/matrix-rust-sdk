@@ -81,7 +81,6 @@ use matrix_sdk::{
     },
     test_utils::client::MockClientBuilder,
 };
-use matrix_sdk_base::crypto::FloeEncryptedFile;
 use sha2::{Digest, Sha256};
 use url::Url;
 
@@ -169,7 +168,10 @@ async fn main() -> Result<()> {
         .upload_floe(std::fs::File::open(&src_path)?, &front_door)
         .await
         .context("upload_floe (is the Pass-2 harness up?)")?;
-    println!("uploaded   : mxc={} size={}", file_block.url, file_block.size);
+    let ruma::events::room::EncryptedFileInfo::Floe(info) = &file_block.info else {
+        anyhow::bail!("upload_floe did not return a FLOE block");
+    };
+    println!("uploaded   : mxc={} size={}", file_block.url, info.size);
 
     // alice sends the FloeEncryptedFile block into the room, Megolm-encrypted.
     let payload = serde_json::to_string(&file_block).context("serialize file block")?;
@@ -206,8 +208,8 @@ async fn main() -> Result<()> {
         }
         got.context("bob never received/decrypted the file event")?
     };
-    let received_block: FloeEncryptedFile =
-        serde_json::from_str(&body).context("parse FloeEncryptedFile from the decrypted event")?;
+    let received_block: ruma::events::room::EncryptedFile =
+        serde_json::from_str(&body).context("parse the EncryptedFile from the decrypted event")?;
     println!("received   : bob decrypted the event; mxc={}", received_block.url);
 
     // bob downloads + FLOE-decrypts, polling through the tus-hook window.

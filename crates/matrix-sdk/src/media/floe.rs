@@ -31,7 +31,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use futures_util::TryStreamExt as _;
 use matrix_sdk_base::crypto::{FloeEncryptedFile, FloeStreamEncryptor};
-use ruma::MxcUri;
+use ruma::{MxcUri, events::room::EncryptedFile};
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::io::{StreamReader, SyncIoBridge};
 use url::Url;
@@ -45,8 +45,8 @@ const TUS_PATCH_CHUNK: usize = 32 * 1024 * 1024;
 
 impl Media {
     /// FLOE-encrypt the bytes `plaintext` yields and stream the ciphertext to
-    /// the resumable-upload `front_door`, returning the
-    /// [`FloeEncryptedFile`] block to put in the room-encrypted event.
+    /// the resumable-upload `front_door`, returning the ruma [`EncryptedFile`]
+    /// block to put in the room-encrypted event.
     ///
     /// A fresh random FLOE root key is generated and the reserved mxc is bound
     /// as associated data, so the blob only validates when served from that
@@ -56,7 +56,7 @@ impl Media {
         &self,
         plaintext: impl Read + Send + 'static,
         front_door: &Url,
-    ) -> Result<FloeEncryptedFile> {
+    ) -> Result<EncryptedFile> {
         // Reserve the mxc (MSC2246). Its media id tags the tus upload so the front
         // door can register the stored object under this mxc.
         let mxc = self.create_content_uri().await?.uri;
@@ -100,7 +100,9 @@ impl Media {
         }
 
         blocking.await.map_err(|e| floe_err(format!("encrypt task panicked: {e}")))?;
-        file_rx.await.map_err(|_| floe_err("encryptor produced no file block".to_owned()))
+        let file =
+            file_rx.await.map_err(|_| floe_err("encryptor produced no file block".to_owned()))?;
+        file.to_ruma().map_err(|e| floe_err(e.to_string()))
     }
 
     /// Download and FLOE-decrypt the blob described by `file`, returning the
@@ -108,9 +110,9 @@ impl Media {
     ///
     /// Buffers the whole plaintext in memory; for multi-gigabyte files prefer
     /// [`Media::get_floe_media_content_to`], which streams into a sink.
-    pub async fn get_floe_media_content(&self, file: &FloeEncryptedFile) -> Result<Vec<u8>> {
+    pub async fn get_floe_media_content(&self, file: &EncryptedFile) -> Result<Vec<u8>> {
+        let file = FloeEncryptedFile::from_ruma(file).map_err(|e| floe_err(e.to_string()))?;
         let reader = self.floe_ciphertext_reader(&file.url).await?;
-        let file = file.clone();
         tokio::task::spawn_blocking(move || -> Result<Vec<u8>, MediaError> {
             let mut decryptor =
                 file.decryptor(reader).map_err(|e| MediaError::FloeStreaming(e.to_string()))?;
@@ -135,14 +137,14 @@ impl Media {
     /// or key is rejected before any plaintext is written.
     pub async fn get_floe_media_content_to<W>(
         &self,
-        file: &FloeEncryptedFile,
+        file: &EncryptedFile,
         mut writer: W,
     ) -> Result<u64>
     where
         W: Write + Send + 'static,
     {
+        let file = FloeEncryptedFile::from_ruma(file).map_err(|e| floe_err(e.to_string()))?;
         let reader = self.floe_ciphertext_reader(&file.url).await?;
-        let file = file.clone();
         tokio::task::spawn_blocking(move || -> Result<u64, MediaError> {
             let mut decryptor =
                 file.decryptor(reader).map_err(|e| MediaError::FloeStreaming(e.to_string()))?;

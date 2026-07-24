@@ -269,13 +269,13 @@ impl Client {
         let front_door = Url::parse(&front_door)
             .map_err(|e| FloeError::Io { message: format!("invalid front door url: {e}") })?;
         let reader = CallbackReader::new(source);
-        let file = self
+        let ruma_file = self
             .inner
             .media()
             .upload_floe(reader, &front_door)
             .await
             .map_err(|e| FloeError::Io { message: e.to_string() })?;
-        Ok(file.into())
+        Ok(CoreFloeEncryptedFile::from_ruma(&ruma_file)?.into())
     }
 
     /// Download and FLOE-decrypt the blob described by `file`, following the
@@ -288,10 +288,11 @@ impl Client {
         sink: Box<dyn FloeByteSink>,
     ) -> Result<(), FloeError> {
         let core = file.into_core()?;
+        let ruma_file = core.to_ruma()?;
         let writer = CallbackWriter::new(sink);
         self.inner
             .media()
-            .get_floe_media_content_to(&core, writer)
+            .get_floe_media_content_to(&ruma_file, writer)
             .await
             .map_err(|e| FloeError::Io { message: e.to_string() })?;
         Ok(())
