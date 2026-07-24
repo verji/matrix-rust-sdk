@@ -333,7 +333,7 @@ impl Drop for KeySchedule {
 /// [`FloeEncryptedFile`] block (carrying the fresh root key and plaintext size)
 /// for the room-encrypted event.
 ///
-/// A plaintext chunk must be at most `S - `[`SEG_OVERHEAD`] bytes; every
+/// A plaintext chunk must be at most `S - SEG_OVERHEAD` bytes; every
 /// non-final chunk should be exactly that size so its frame is exactly `S`
 /// bytes. `S` is the encrypted-segment size and defaults to [`ENC_SEG_LEN`].
 ///

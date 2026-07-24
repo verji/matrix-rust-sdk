@@ -263,6 +263,7 @@ impl FloeEncryptedFile {
     /// ([`EncryptedFileInfo::Floe`]) block.
     ///
     /// [`EncryptedFile`]: ruma::events::room::EncryptedFile
+    /// [`EncryptedFileInfo::Floe`]: ruma::events::room::EncryptedFileInfo::Floe
     pub fn from_ruma(file: &ruma::events::room::EncryptedFile) -> Result<Self, FloeError> {
         use ruma::events::room::EncryptedFileInfo;
 
