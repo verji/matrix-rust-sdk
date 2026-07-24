@@ -84,6 +84,7 @@ ruma = { version = "0.16.0", features = [
     "unstable-msc3417",
     "unstable-msc3488",
     "unstable-msc3489",
+    "unstable-msc4016",
     "unstable-msc4075",
     "unstable-msc4140",
     "unstable-msc4143",
@@ -232,6 +233,17 @@ inherits = "release"
 lto = false
 
 [patch.crates-io]
+# Aligned ruma fork carrying the MSC4016 FLOE type (unstable-msc4016). Fork-only
+# plumbing: this git-pin drops once the FLOE type is upstream on crates.io.
+ruma = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-common = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-events = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-client-api = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-federation-api = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-html = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-identifiers-validation = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-macros = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma-signatures = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
 async-compat = { git = "https://github.com/element-hq/async-compat", rev = "5a27c8b290f1f1dcfc0c4ec22c464e38528aa591" }
 const_panic = { git = "https://github.com/jplatte/const_panic", rev = "e0b317a9a7bde2d48a7d15b6a60d70e4a41d3b5f" }
 # Needed to fix rotation log issue on Android (https://github.com/tokio-rs/tracing/issues/2937)
