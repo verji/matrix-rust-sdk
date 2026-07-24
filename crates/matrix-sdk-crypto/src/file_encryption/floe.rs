@@ -61,7 +61,7 @@ use super::MediaEncryptionInfo;
 
 /// The format discriminator for the fixed-segment FLOE scheme (the only FLOE
 /// version defined today).
-pub const FLOE_V0: &str = "org.verji.msc4016.floe.v0";
+pub const FLOE_V0: &str = "org.matrix.msc4016.floe.v0";
 
 /// The FLOE encrypted-segment size, 256 KiB.
 ///

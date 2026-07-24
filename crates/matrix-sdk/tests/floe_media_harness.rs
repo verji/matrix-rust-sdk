@@ -50,7 +50,7 @@ async fn floe_media_roundtrip() {
         "uploaded: url={} v={} enc_seg_len={} size={}",
         file.url, file.v, file.enc_seg_len, file.size
     );
-    assert_eq!(file.v, "org.verji.msc4016.floe.v0");
+    assert_eq!(file.v, "org.matrix.msc4016.floe.v0");
     assert_eq!(file.size, plaintext.len() as u64);
 
     // The tus front door acks the upload (PATCH 204) before its post-finish hook

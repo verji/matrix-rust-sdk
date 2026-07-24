@@ -403,7 +403,7 @@ mod tests {
         let blob_bytes = blob.take();
         assert_eq!(file.size, plaintext.len() as u64);
         assert_eq!(file.enc_seg_len, 262_144);
-        assert_eq!(file.v, "org.verji.msc4016.floe.v0");
+        assert_eq!(file.v, "org.matrix.msc4016.floe.v0");
 
         // decrypt: blob + file block -> plaintext
         let recovered = Arc::new(VecSink::default());
