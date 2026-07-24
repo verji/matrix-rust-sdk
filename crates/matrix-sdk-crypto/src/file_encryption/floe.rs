@@ -227,6 +227,64 @@ impl<'de> Deserialize<'de> for FileEncryptionScheme {
     }
 }
 
+impl FloeEncryptedFile {
+    /// Convert this FLOE block into ruma's typed [`EncryptedFile`], selecting
+    /// the [`EncryptedFileInfo::Floe`] variant. This is the boundary type
+    /// the media API and bindings hand to callers, so the block embeds in a
+    /// room event as first-class ruma media rather than a fork-owned
+    /// struct.
+    ///
+    /// [`EncryptedFile`]: ruma::events::room::EncryptedFile
+    /// [`EncryptedFileInfo::Floe`]: ruma::events::room::EncryptedFileInfo::Floe
+    pub fn to_ruma(&self) -> Result<ruma::events::room::EncryptedFile, FloeError> {
+        use ruma::{
+            UInt,
+            events::room::{
+                EncryptedFile, EncryptedFileHashes, EncryptedFileInfo, FloeEncryptedFileInfo,
+            },
+        };
+
+        let size = UInt::try_from(self.size).map_err(|_| {
+            FloeError::UnexpectedVersion(format!("plaintext size {} out of range", self.size))
+        })?;
+        let info = FloeEncryptedFileInfo::new(self.key.k.clone(), self.enc_seg_len.into(), size);
+        Ok(EncryptedFile::new(
+            self.url.clone(),
+            EncryptedFileInfo::Floe(info),
+            EncryptedFileHashes::new(),
+        ))
+    }
+
+    /// Rebuild a FLOE block from ruma's typed [`EncryptedFile`].
+    ///
+    /// # Errors
+    ///
+    /// [`FloeError::UnexpectedVersion`] if `file` isn't a FLOE
+    /// ([`EncryptedFileInfo::Floe`]) block.
+    ///
+    /// [`EncryptedFile`]: ruma::events::room::EncryptedFile
+    pub fn from_ruma(file: &ruma::events::room::EncryptedFile) -> Result<Self, FloeError> {
+        use ruma::events::room::EncryptedFileInfo;
+
+        let EncryptedFileInfo::Floe(info) = &file.info else {
+            return Err(FloeError::UnexpectedVersion(file.info.version().to_owned()));
+        };
+        let enc_seg_len = u32::try_from(u64::from(info.enc_seg_len)).map_err(|_| {
+            FloeError::UnexpectedVersion(format!(
+                "segment size {} out of range",
+                u64::from(info.enc_seg_len)
+            ))
+        })?;
+        Ok(Self {
+            url: file.url.clone(),
+            v: FLOE_V0.to_owned(),
+            key: floe_jwk(&info.key.clone().into_inner()),
+            enc_seg_len,
+            size: info.size.into(),
+        })
+    }
+}
+
 /// Build the FLOE JWK `oct` block for a freshly generated root key.
 ///
 /// Shared with the async ([`super::floe_async`]) driver so the JWK's `alg`,
@@ -551,7 +609,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        ENC_SEG_LEN, FLOE_V0, FileEncryptionScheme, FloeStreamDecryptor, FloeStreamEncryptor,
+        ENC_SEG_LEN, FLOE_V0, FileEncryptionScheme, FloeEncryptedFile, FloeStreamDecryptor,
+        FloeStreamEncryptor, KEY_SIZE, floe_jwk,
     };
 
     /// The associated data the canonical FLOE test vectors were generated with.
@@ -585,6 +644,49 @@ mod tests {
         let mut decrypted = Vec::new();
         decryptor.read_to_end(&mut decrypted).expect("decrypt");
         assert_eq!(plaintext, decrypted, "decrypted KAT mismatch");
+    }
+
+    #[test]
+    fn to_ruma_from_ruma_roundtrip() {
+        let file = FloeEncryptedFile {
+            url: OwnedMxcUri::from("mxc://example.org/AbCdEfHugeFloe"),
+            v: FLOE_V0.to_owned(),
+            key: floe_jwk(&[7u8; KEY_SIZE]),
+            enc_seg_len: ENC_SEG_LEN,
+            size: 4_294_967_296,
+        };
+
+        let ruma = file.to_ruma().expect("to_ruma");
+        assert_eq!(ruma.url, file.url);
+        assert_eq!(ruma.info.version(), "org.matrix.msc4016.floe.v0");
+        assert!(ruma.hashes.is_empty());
+
+        let back = FloeEncryptedFile::from_ruma(&ruma).expect("from_ruma");
+        assert_eq!(back.url, file.url);
+        assert_eq!(back.v, file.v);
+        assert_eq!(back.key.k.encode(), file.key.k.encode());
+        assert_eq!(back.enc_seg_len, file.enc_seg_len);
+        assert_eq!(back.size, file.size);
+    }
+
+    #[test]
+    fn from_ruma_rejects_non_floe() {
+        // A legacy v2 encrypted file is not a FLOE block.
+        let v2 = serde_json::from_value::<ruma::events::room::EncryptedFile>(json!({
+            "url": "mxc://example.org/v2file",
+            "key": {
+                "kty": "oct",
+                "key_ops": ["encrypt", "decrypt"],
+                "alg": "A256CTR",
+                "k": "TLlG_OpX807zzQuuwv4QZGJ21_u7weemFGYJFszMn9A",
+                "ext": true
+            },
+            "iv": "S22dq3NAX8wAAAAAAAAAAA",
+            "hashes": { "sha256": "aWOHudBnDkJ9IwaR1Nd8XKoI7DOrqDTwt6xDPfVGN6Q" },
+            "v": "v2"
+        }))
+        .expect("parse v2");
+        assert!(FloeEncryptedFile::from_ruma(&v2).is_err());
     }
 
     // The full canonical FLOE KAT suite (22 vectors, all five reference impls),

@@ -46,12 +46,18 @@ async fn floe_media_roundtrip() {
         .upload_floe(Cursor::new(plaintext.clone()), &front_door)
         .await
         .expect("upload_floe failed");
+    let ruma::events::room::EncryptedFileInfo::Floe(info) = &file.info else {
+        panic!("upload_floe did not return a FLOE block");
+    };
     eprintln!(
         "uploaded: url={} v={} enc_seg_len={} size={}",
-        file.url, file.v, file.enc_seg_len, file.size
+        file.url,
+        file.info.version(),
+        info.enc_seg_len,
+        info.size
     );
-    assert_eq!(file.v, "org.matrix.msc4016.floe.v0");
-    assert_eq!(file.size, plaintext.len() as u64);
+    assert_eq!(file.info.version(), "org.matrix.msc4016.floe.v0");
+    assert_eq!(u64::from(info.size), plaintext.len() as u64);
 
     // The tus front door acks the upload (PATCH 204) before its post-finish hook
     // registers the mxc with the media server, so poll through that window. In a
@@ -104,8 +110,16 @@ async fn floe_media_large_streaming() {
 
     let t = Instant::now();
     let file = media.upload_floe(FloeGen::new(total), &front_door).await.expect("upload_floe");
-    eprintln!("uploaded {total} B in {:?} (v={}, size={})", t.elapsed(), file.v, file.size);
-    assert_eq!(file.size, total, "declared size mismatch");
+    let ruma::events::room::EncryptedFileInfo::Floe(info) = &file.info else {
+        panic!("upload_floe did not return a FLOE block");
+    };
+    eprintln!(
+        "uploaded {total} B in {:?} (v={}, size={})",
+        t.elapsed(),
+        file.info.version(),
+        info.size
+    );
+    assert_eq!(u64::from(info.size), total, "declared size mismatch");
 
     // Stream the download straight into a verifier (no buffering), retrying
     // through the front-door registration window.

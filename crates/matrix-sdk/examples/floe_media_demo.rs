@@ -104,12 +104,18 @@ async fn main() -> anyhow::Result<()> {
         .await
         .context("upload_floe failed (is the Pass-2 harness up? docker compose up -d)")?;
     let up_elapsed = t.elapsed();
+    let ruma::events::room::EncryptedFileInfo::Floe(info) = &file_block.info else {
+        anyhow::bail!("upload_floe did not return a FLOE block");
+    };
     println!(
         "uploaded   : mxc={} v={} enc_seg_len={} size={} in {up_elapsed:?}",
-        file_block.url, file_block.v, file_block.enc_seg_len, file_block.size,
+        file_block.url,
+        file_block.info.version(),
+        info.enc_seg_len,
+        info.size,
     );
     println!(
-        "             (this FloeEncryptedFile block is what goes in the room event — Phase 2)"
+        "             (this ruma EncryptedFile block is what goes in the room event — Phase 2)"
     );
 
     // Download: follow the MSC3860 redirect and stream the plaintext straight to
