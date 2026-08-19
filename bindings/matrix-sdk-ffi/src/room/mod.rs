@@ -27,6 +27,7 @@ use matrix_sdk::{
     DraftAttachment as SdkDraftAttachment, DraftAttachmentContent, DraftThumbnail, EncryptionState,
     PredecessorRoom as SdkPredecessorRoom, RoomHero as SdkRoomHero, RoomMemberships, RoomState,
     SuccessorRoom as SdkSuccessorRoom,
+    deserialized_responses::RawAnySyncOrStrippedState,
     encryption::LocalTrust,
     event_handler::EventHandlerHandle,
     room::{
@@ -42,9 +43,11 @@ use matrix_sdk_ui::{
 use mime::Mime;
 use ruma::{
     EventId, Int, OwnedDeviceId, OwnedRoomOrAliasId, OwnedServerName, OwnedUserId, RoomAliasId,
-    ServerName, UserId, assign,
+    ServerName, UserId,
+    api::error::ErrorKind,
+    assign,
     events::{
-        AnyMessageLikeEventContent, AnySyncTimelineEvent,
+        AnyMessageLikeEventContent, AnySyncTimelineEvent, StateEventType,
         receipt::ReceiptThread,
         room::{
             MediaSource as RumaMediaSource, avatar::ImageInfo as RumaAvatarImageInfo,
@@ -475,6 +478,83 @@ impl Room {
             self.inner.send_state_event_raw(&event_type, &state_key, content_json).await?;
 
         Ok(response.event_id.to_string())
+    }
+
+    /// Read a single event of this room as raw JSON.
+    ///
+    /// The event is looked up in the local event cache first and fetched from
+    /// the homeserver only if it is not cached. It is returned
+    /// post-Megolm-decryption; if it could not be decrypted, the original
+    /// `m.room.encrypted` JSON is returned instead.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_id` - The ID of the event to read.
+    ///
+    /// Returns the whole event as a JSON string — `type`, `sender`,
+    /// `event_id`, `origin_server_ts` and `content` — or `None` if neither the
+    /// cache nor the homeserver knows the event.
+    pub async fn get_event_raw(&self, event_id: String) -> Result<Option<String>, ClientError> {
+        let event_id = EventId::parse(event_id)?;
+
+        match self.inner.load_or_fetch_event(&event_id, None).await {
+            Ok(event) => {
+                let raw = event.into_raw();
+                Ok(Some(raw.json().get().to_owned()))
+            }
+            Err(err) if matches!(err.client_api_error_kind(), Some(ErrorKind::NotFound)) => {
+                Ok(None)
+            }
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    /// Read a single state event of this room as raw JSON.
+    ///
+    /// The event comes from the local state store, so it is available without
+    /// a round-trip and survives a restart — unlike the timeline, room state
+    /// is retained in full. Any event type is accepted, including custom ones.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the state event to read (e.g.
+    ///   `"m.room.name"` or a custom type).
+    ///
+    /// * `state_key` - The state key to read. This is often an empty string.
+    ///
+    /// Returns the whole state event as a JSON string — including `state_key`,
+    /// `sender` and `content` — or `None` if the room has no state event with
+    /// that type and key.
+    pub async fn get_state_event_raw(
+        &self,
+        event_type: String,
+        state_key: String,
+    ) -> Result<Option<String>, ClientError> {
+        let state_event =
+            self.inner.get_state_event(StateEventType::from(event_type), &state_key).await?;
+
+        Ok(state_event.as_ref().map(raw_state_event_json))
+    }
+
+    /// Read every state event of a given type in this room as raw JSON — one
+    /// entry per state key.
+    ///
+    /// This is the enumeration counterpart of [`Room::get_state_event_raw`],
+    /// for custom state event types that use the state key as an index (one
+    /// entry per user, per resource, and so on). Each entry carries its own
+    /// `state_key`, so the caller can tell them apart. The order is
+    /// unspecified.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the state events to read.
+    pub async fn get_state_events_raw(
+        &self,
+        event_type: String,
+    ) -> Result<Vec<String>, ClientError> {
+        let state_events = self.inner.get_state_events(StateEventType::from(event_type)).await?;
+
+        Ok(state_events.iter().map(raw_state_event_json).collect())
     }
 
     /// Redacts an event from the room.
@@ -1389,6 +1469,18 @@ impl Drop for EventHandlerGuard {
     }
 }
 
+/// The raw JSON of a state event, from whichever room state it was read.
+///
+/// State read from an invited room is stripped: it carries `type`,
+/// `state_key`, `sender` and `content`, but no `event_id` or
+/// `origin_server_ts`.
+fn raw_state_event_json(raw: &RawAnySyncOrStrippedState) -> String {
+    match raw {
+        RawAnySyncOrStrippedState::Sync(event) => event.json().get().to_owned(),
+        RawAnySyncOrStrippedState::Stripped(event) => event.json().get().to_owned(),
+    }
+}
+
 fn forward_custom_event(
     listener: &Arc<dyn CustomEventListener>,
     already_emitted: &Arc<StdMutex<HashSet<String>>>,
@@ -2182,8 +2274,14 @@ impl TryFrom<SdkRoomSendQueueUpdate> for RoomSendQueueUpdate {
 mod tests {
     use std::time::Duration;
 
-    use matrix_sdk::{ruma::room_id, test_utils::mocks::MatrixMockServer};
+    use matrix_sdk::{
+        deserialized_responses::TimelineEvent,
+        ruma::{event_id, events::AnySyncStateEvent, room_id},
+        test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::JoinedRoomBuilder;
     use tempfile::tempdir;
+    use wiremock::ResponseTemplate;
 
     use super::*;
 
@@ -2223,5 +2321,198 @@ mod tests {
         std::thread::spawn(move || drop(ffi_room))
             .join()
             .expect("Room::drop panicked on a non-tokio thread");
+    }
+
+    /// A custom state event type, of the shape the read surface exists for:
+    /// one entry per user, indexed by the state key.
+    const CUSTOM_STATE_TYPE: &str = "com.example.custom.state";
+
+    fn custom_state_event(state_key: &str, content: serde_json::Value) -> Raw<AnySyncStateEvent> {
+        Raw::from_json_string(
+            serde_json::json!({
+                "type": CUSTOM_STATE_TYPE,
+                "state_key": state_key,
+                "sender": "@alice:example.com",
+                "event_id": format!("$state-{state_key}"),
+                "origin_server_ts": 1_000_000,
+                "content": content,
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// Room state is retained in full and read from the local state store, so
+    /// a custom state event is readable after a sync without a round-trip —
+    /// including the state key and sender, not only the content.
+    #[tokio::test]
+    async fn get_state_event_raw_reads_a_custom_state_event() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_bulk(vec![
+                    custom_state_event("@alice:example.com", serde_json::json!({"step": "review"})),
+                    custom_state_event("@bob:example.com", serde_json::json!({"step": "draft"})),
+                ]),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let raw = room
+            .get_state_event_raw(CUSTOM_STATE_TYPE.to_owned(), "@alice:example.com".to_owned())
+            .await
+            .unwrap()
+            .expect("the custom state event should be readable");
+
+        let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(event["type"], CUSTOM_STATE_TYPE);
+        assert_eq!(event["state_key"], "@alice:example.com");
+        assert_eq!(event["sender"], "@alice:example.com");
+        assert_eq!(event["content"]["step"], "review");
+    }
+
+    #[tokio::test]
+    async fn get_state_event_raw_is_none_for_an_unknown_state_key() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event(
+                    "@alice:example.com",
+                    serde_json::json!({"step": "review"}),
+                )),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let missing = room
+            .get_state_event_raw(CUSTOM_STATE_TYPE.to_owned(), "@nobody:example.com".to_owned())
+            .await
+            .unwrap();
+
+        assert!(missing.is_none());
+    }
+
+    /// Enumerating a custom type returns one entry per state key, each
+    /// carrying its own key so the caller can tell them apart.
+    #[tokio::test]
+    async fn get_state_events_raw_returns_every_state_key() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_bulk(vec![
+                    custom_state_event("@alice:example.com", serde_json::json!({"step": "review"})),
+                    custom_state_event("@bob:example.com", serde_json::json!({"step": "draft"})),
+                ]),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let events = room.get_state_events_raw(CUSTOM_STATE_TYPE.to_owned()).await.unwrap();
+
+        let mut state_keys: Vec<String> = events
+            .iter()
+            .map(|raw| {
+                let event: serde_json::Value = serde_json::from_str(raw).unwrap();
+                event["state_key"].as_str().unwrap().to_owned()
+            })
+            .collect();
+        state_keys.sort();
+
+        assert_eq!(state_keys, vec!["@alice:example.com", "@bob:example.com"]);
+    }
+
+    #[tokio::test]
+    async fn get_state_events_raw_is_empty_for_an_unknown_type() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server.sync_joined_room(&client, room_id).await;
+        let room = Room::new(sdk_room, None);
+
+        let events = room.get_state_events_raw(CUSTOM_STATE_TYPE.to_owned()).await.unwrap();
+
+        assert!(events.is_empty());
+    }
+
+    /// Reading by event id returns the whole event, not only its content — the
+    /// sender and timestamp are what make it usable as provenance.
+    #[tokio::test]
+    async fn get_event_raw_returns_the_whole_event() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+        let event_id = event_id!("$custom-timeline-event");
+
+        let sdk_room = server.sync_joined_room(&client, room_id).await;
+        let room = Room::new(sdk_room, None);
+
+        let raw_event: Raw<AnySyncTimelineEvent> = Raw::from_json_string(
+            serde_json::json!({
+                "type": "com.example.custom.message",
+                "sender": "@alice:example.com",
+                "event_id": event_id,
+                "origin_server_ts": 1_000_000,
+                "content": {"payload": "hello"},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        server
+            .mock_room_event()
+            .room(room_id)
+            .ok(TimelineEvent::from_plaintext(raw_event))
+            .mount()
+            .await;
+
+        let raw = room
+            .get_event_raw(event_id.to_string())
+            .await
+            .unwrap()
+            .expect("the event should be readable");
+
+        let event: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert_eq!(event["type"], "com.example.custom.message");
+        assert_eq!(event["event_id"], event_id.as_str());
+        assert_eq!(event["sender"], "@alice:example.com");
+        assert_eq!(event["content"]["payload"], "hello");
+    }
+
+    /// An event the homeserver does not know is absence, not failure — the
+    /// caller gets `None` rather than an error to interpret.
+    #[tokio::test]
+    async fn get_event_raw_is_none_when_the_event_is_unknown() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server.sync_joined_room(&client, room_id).await;
+        let room = Room::new(sdk_room, None);
+
+        server
+            .mock_room_event()
+            .room(room_id)
+            .ok_with_template(ResponseTemplate::new(404).set_body_json(serde_json::json!({
+                "errcode": "M_NOT_FOUND",
+                "error": "Event not found.",
+            })))
+            .mount()
+            .await;
+
+        let missing = room.get_event_raw(event_id!("$missing").to_string()).await.unwrap();
+
+        assert!(missing.is_none());
     }
 }

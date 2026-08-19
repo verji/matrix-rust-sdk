@@ -3768,6 +3768,7 @@ dependencies = [
  "matrix-sdk-common",
  "matrix-sdk-contentscanner",
  "matrix-sdk-ffi-macros",
+ "matrix-sdk-test",
  "matrix-sdk-ui",
  "mime",
  "oauth2",
@@ -3795,6 +3796,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wiremock",
  "zeroize",
 ]
 
