@@ -57,7 +57,7 @@ use std::fmt;
 /// FLOE's framing and its one-per-file HKDF stay in floe-rs (synchronous Rust);
 /// only the AES-256-GCM of each ≤256 KiB segment crosses this seam. The web
 /// build implements it over [`crypto.subtle`][SubtleCrypto] (whose operations
-/// genuinely await) via [`WebCryptoAeadBackend`]; tests implement it
+/// genuinely await) via `WebCryptoAeadBackend`; tests implement it
 /// synchronously over RustCrypto.
 ///
 /// [SubtleCrypto]: https://developer.mozilla.org/en-US/docs/Web/API/SubtleCrypto
