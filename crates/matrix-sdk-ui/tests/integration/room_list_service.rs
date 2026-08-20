@@ -37,6 +37,17 @@ async fn new_room_list_service() -> Result<(Client, MatrixMockServer, RoomListSe
     Ok((client, server, room_list))
 }
 
+async fn new_room_list_service_with_extra_required_state(
+    extra: Vec<(ruma::events::StateEventType, String)>,
+) -> Result<(MatrixMockServer, RoomListService), Error> {
+    let server = MatrixMockServer::new().await;
+    let client = server.client_builder().build().await;
+    // "room-list" is `DEFAULT_CONNECTION_ID`, which is `pub(crate)`.
+    let room_list = RoomListService::new_with(client, true, "room-list", 1, extra).await?;
+
+    Ok((server, room_list))
+}
+
 async fn new_persistent_room_list_service(
     store_path: &std::path::Path,
 ) -> Result<(MatrixMockServer, RoomListService), Error> {
@@ -327,6 +338,64 @@ macro_rules! assert_entries_batch {
 }
 
 #[async_test]
+async fn test_sync_extra_required_state_reaches_the_request() -> Result<(), Error> {
+    // Custom state event types are only delivered if they are named in
+    // `required_state`. `DEFAULT_REQUIRED_STATE` is a fixed allowlist of types
+    // the SDK knows about, so without this extension point a custom type never
+    // reaches the state store and reads back as `None` however the write went.
+    let (server, room_list) = new_room_list_service_with_extra_required_state(vec![
+        (ruma::events::StateEventType::from("com.example.index"), "*".to_owned()),
+        (ruma::events::StateEventType::from("com.example.pointer"), "".to_owned()),
+    ])
+    .await?;
+
+    let sync = room_list.sync();
+    pin_mut!(sync);
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        states = Init => SettingUp,
+        assert request >= {
+            "lists": {
+                ALL_ROOMS: {
+                    "required_state": [
+                        // The defaults are still requested…
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        // …and the consumer's entries are appended, in order.
+                        ["com.example.index", "*"],
+                        ["com.example.pointer", ""],
+                    ],
+                },
+            },
+        },
+        respond with = {
+            "pos": "0",
+            "lists": { ALL_ROOMS: { "count": 0 } },
+            "rooms": {},
+            "extensions": {},
+        },
+    };
+
+    Ok(())
+}
+
+#[async_test]
 async fn test_sync_all_states() -> Result<(), Error> {
     let (_, server, room_list) = new_room_list_service().await?;
 
@@ -397,8 +466,7 @@ async fn test_sync_all_states() -> Result<(), Error> {
 
     sync_then_assert_request_and_fake_response! {
         [server, room_list, sync]
-        states = SettingUp => Running,
-        // The previous `pos`.
+        states = SettingUp => Running,        // The previous `pos`.
         assert pos Some("0"),
         // Still no long-polling because the list isn't fully-loaded.
         assert timeout Some(0),

@@ -17,6 +17,7 @@ use std::{fmt::Debug, sync::Arc};
 use futures_util::pin_mut;
 use matrix_sdk::Client;
 use matrix_sdk_common::{SendOutsideWasm, SyncOutsideWasm};
+use ruma::events::StateEventType;
 use matrix_sdk_ui::{
     sync_service::{
         State as MatrixSyncServiceState, SyncService as MatrixSyncService,
@@ -101,6 +102,19 @@ impl SyncService {
     }
 }
 
+/// One `required_state` entry: a state event type and the state key to request
+/// for it.
+///
+/// `state_key` may be `"*"` for every state key of that type, or a literal key
+/// (`""` for the common single-instance case).
+#[derive(Clone, uniffi::Record)]
+pub struct RequiredStateEntry {
+    /// The state event type, e.g. `"com.example.index"`.
+    pub event_type: String,
+    /// The state key, or `"*"` for all of them.
+    pub state_key: String,
+}
+
 #[derive(Clone, uniffi::Object)]
 pub struct SyncServiceBuilder {
     builder: MatrixSyncServiceBuilder,
@@ -147,6 +161,39 @@ impl SyncServiceBuilder {
     pub fn with_room_list_timeline_limit(self: Arc<Self>, limit: u32) -> Arc<Self> {
         let this = unwrap_or_clone_arc(self);
         let builder = this.builder.with_room_list_timeline_limit(limit);
+        Arc::new(Self { builder, ..this })
+    }
+
+    /// Request extra state event types from the server, on top of the ones the
+    /// SDK asks for by default.
+    ///
+    /// **Required to read custom state event types at all.** Sliding Sync only
+    /// delivers the types named in `required_state`, and the SDK's default list
+    /// covers only types it knows about. A custom type left out of it never
+    /// reaches the state store, so [`Room::get_state_event_raw`] returns `None`
+    /// for it regardless of what the homeserver holds — the write succeeds and
+    /// the read silently sees nothing.
+    ///
+    /// Use `"*"` as the state key to request every state key of a type, as the
+    /// defaults do for `m.call.member` and `m.space.child`. That is what makes
+    /// [`Room::get_state_events_raw`] able to enumerate a custom type.
+    ///
+    /// Must be set before [`Self::finish`] — `required_state` is fixed when the
+    /// Sliding Sync list is built.
+    ///
+    /// [`Room::get_state_event_raw`]: crate::room::Room::get_state_event_raw
+    /// [`Room::get_state_events_raw`]: crate::room::Room::get_state_events_raw
+    pub fn with_room_list_extra_required_state(
+        self: Arc<Self>,
+        entries: Vec<RequiredStateEntry>,
+    ) -> Arc<Self> {
+        let this = unwrap_or_clone_arc(self);
+        let builder = this.builder.with_room_list_extra_required_state(
+            entries
+                .into_iter()
+                .map(|entry| (StateEventType::from(entry.event_type), entry.state_key))
+                .collect(),
+        );
         Arc::new(Self { builder, ..this })
     }
 
