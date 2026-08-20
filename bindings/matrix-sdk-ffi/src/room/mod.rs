@@ -47,7 +47,7 @@ use ruma::{
     api::error::ErrorKind,
     assign,
     events::{
-        AnyMessageLikeEventContent, AnySyncTimelineEvent, StateEventType,
+        AnyMessageLikeEventContent, AnySyncStateEvent, AnySyncTimelineEvent, StateEventType,
         receipt::ReceiptThread,
         room::{
             MediaSource as RumaMediaSource, avatar::ImageInfo as RumaAvatarImageInfo,
@@ -1453,6 +1453,122 @@ impl Room {
             std::future::pending::<()>().await;
         })))
     }
+
+    /// Subscribe to custom **state** events of the given types, delivered as
+    /// raw JSON.
+    ///
+    /// This is the state-event counterpart of
+    /// [`Room::subscribe_to_custom_events`], which only ever sees *timeline*
+    /// events: matrix-sdk dispatches state events under a different handler
+    /// kind, so a custom state event reaches a timeline handler only when it
+    /// happens to ride a live timeline chunk — never on initial sync, after a
+    /// gap, or at startup. That failure is silent, which is worse than being
+    /// unsupported.
+    ///
+    /// On registration the current value of each requested state event is read
+    /// from the local state store and delivered first ("bootstrap"), then live
+    /// updates follow. Because room state is retained in full, a subscriber
+    /// started long after the fact still sees state written while it was
+    /// offline.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_types` — the state event `type` strings to subscribe to. Must
+    ///   not be empty. The state store is queried per type, so there is no way
+    ///   to bootstrap "every type", and a subscription that cannot bootstrap is
+    ///   precisely the failure this method exists to avoid — so it is rejected
+    ///   rather than silently degraded to live-only.
+    ///
+    /// * `listener` — invoked once per delivered event with the whole state
+    ///   event as JSON, the same shape [`Room::get_state_event_raw`] returns.
+    ///
+    /// Each event is delivered once. A later event for the same `(type,
+    /// state_key)` supersedes the earlier one and is delivered; the same event
+    /// arriving through both the bootstrap and live sync is not.
+    ///
+    /// Cancel by dropping the returned [`TaskHandle`] (the underlying event
+    /// handler is unregistered automatically).
+    pub fn subscribe_to_custom_state_events(
+        &self,
+        event_types: Vec<String>,
+        listener: Box<dyn CustomStateEventListener>,
+    ) -> Result<Arc<TaskHandle>, ClientError> {
+        if event_types.is_empty() {
+            return Err(ClientError::Generic {
+                msg: "subscribe_to_custom_state_events requires at least one event type".to_owned(),
+                details: None,
+            });
+        }
+
+        let listener: Arc<dyn CustomStateEventListener> = Arc::from(listener);
+        let inner = self.inner.clone();
+        let target_room_id = self.inner.room_id().to_owned();
+        let filter: Arc<HashSet<String>> = Arc::new(event_types.iter().cloned().collect());
+        let delivered: Arc<StdMutex<HashMap<(String, String), String>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+
+        // Register the live handler first so we don't miss events that arrive
+        // while we're reading the state store for the bootstrap. Typing the
+        // handler `Raw<AnySyncStateEvent>` is what puts it under the SDK's
+        // state handler kind rather than the timeline one.
+        let handler_handle = {
+            let listener = listener.clone();
+            let filter = filter.clone();
+            let delivered = delivered.clone();
+            let target_room_id = target_room_id.clone();
+            self.inner.client().add_event_handler(
+                move |raw: Raw<AnySyncStateEvent>, room: SdkRoom| {
+                    let listener = listener.clone();
+                    let filter = filter.clone();
+                    let delivered = delivered.clone();
+                    let target_room_id = target_room_id.clone();
+                    async move {
+                        if room.room_id() != target_room_id {
+                            return;
+                        }
+                        forward_custom_state_event(
+                            &listener,
+                            &delivered,
+                            &filter,
+                            raw.json().get(),
+                            StateDelivery::Live,
+                        );
+                    }
+                },
+            )
+        };
+
+        let guard = EventHandlerGuard { client: self.inner.client(), handle: Some(handler_handle) };
+
+        Ok(Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            for event_type in event_types {
+                match inner.get_state_events(StateEventType::from(event_type.clone())).await {
+                    Ok(events) => {
+                        for raw in &events {
+                            forward_custom_state_event(
+                                &listener,
+                                &delivered,
+                                &filter,
+                                &raw_state_event_json(raw),
+                                StateDelivery::Bootstrap,
+                            );
+                        }
+                    }
+                    Err(err) => {
+                        warn!(
+                            "subscribe_to_custom_state_events: failed to read state for \
+                             {event_type}: {err}"
+                        );
+                    }
+                }
+            }
+
+            // Hold the handler alive until the task is cancelled. Dropping
+            // `guard` removes the registered event handler.
+            let _guard = guard;
+            std::future::pending::<()>().await;
+        }))))
+    }
 }
 
 /// Removes a registered event handler from the client when dropped.
@@ -1479,6 +1595,85 @@ fn raw_state_event_json(raw: &RawAnySyncOrStrippedState) -> String {
         RawAnySyncOrStrippedState::Sync(event) => event.json().get().to_owned(),
         RawAnySyncOrStrippedState::Stripped(event) => event.json().get().to_owned(),
     }
+}
+
+/// Where a state event being forwarded came from.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StateDelivery {
+    /// The initial read of the state store.
+    Bootstrap,
+    /// A live sync.
+    Live,
+}
+
+/// Forward one state event to a [`CustomStateEventListener`], unless it has
+/// already been delivered.
+///
+/// State is keyed by `(type, state_key)` — a "slot" — and a later event in a
+/// slot supersedes the earlier one rather than repeating it. So de-duplication
+/// tracks the version last delivered per slot, which is bounded by the room's
+/// state cardinality, rather than accumulating every event id ever seen.
+fn forward_custom_state_event(
+    listener: &Arc<dyn CustomStateEventListener>,
+    delivered: &Arc<StdMutex<HashMap<(String, String), String>>>,
+    filter: &HashSet<String>,
+    raw_json: &str,
+    delivery: StateDelivery,
+) {
+    #[derive(serde::Deserialize)]
+    struct Header {
+        #[serde(rename = "type")]
+        event_type: String,
+        #[serde(default)]
+        state_key: Option<String>,
+        #[serde(default)]
+        event_id: Option<String>,
+    }
+
+    let header: Header = match serde_json::from_str(raw_json) {
+        Ok(header) => header,
+        Err(err) => {
+            warn!("subscribe_to_custom_state_events: failed to parse event header: {err}");
+            return;
+        }
+    };
+
+    if !filter.contains(&header.event_type) {
+        return;
+    }
+
+    // The state handler kind should only ever see events with a state key, but
+    // the JSON is not ours to trust.
+    let Some(state_key) = header.state_key else {
+        return;
+    };
+
+    // Stripped state, from an invited room, carries no event id — fall back to
+    // the payload itself to tell one version of a slot from the next.
+    let version = match header.event_id {
+        Some(event_id) if !event_id.is_empty() => event_id,
+        _ => raw_json.to_owned(),
+    };
+
+    {
+        let mut delivered = match delivered.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+
+        match delivered.get(&(header.event_type.clone(), state_key.clone())) {
+            // The bootstrap fills only the slots live delivery has not already
+            // covered: its read of the state store can race a sync and come
+            // back with a staler value than the one already handed over.
+            Some(_) if delivery == StateDelivery::Bootstrap => return,
+            Some(last) if *last == version => return,
+            _ => {}
+        }
+
+        delivered.insert((header.event_type, state_key), version);
+    }
+
+    listener.on_event(raw_json.to_owned());
 }
 
 fn forward_custom_event(
@@ -1667,6 +1862,26 @@ pub trait CustomEventListener: SyncOutsideWasm + SendOutsideWasm {
         event_id: String,
         timestamp_ms: u64,
     );
+}
+
+/// A listener for raw custom **state** events, delivered from the room's state
+/// store on subscribe and from sync thereafter. Used by
+/// [`Room::subscribe_to_custom_state_events`].
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait CustomStateEventListener: SyncOutsideWasm + SendOutsideWasm {
+    /// Called once per delivered event.
+    ///
+    /// * `event_json` — the whole state event as JSON: `type`, `state_key`,
+    ///   `sender`, `content`, plus `event_id` and `origin_server_ts` for state
+    ///   read from a joined room.
+    ///
+    /// Unlike [`CustomEventListener`], which decomposes the event into
+    /// parameters and hands back only its `content`, this delivers the whole
+    /// event — the same shape [`Room::get_state_event_raw`] returns. The
+    /// subscription and the read surface carry the same data through two
+    /// doors, and a consumer reconciling one against the other should not need
+    /// two parsers to do it.
+    fn on_event(&self, event_json: String);
 }
 
 #[derive(uniffi::Object)]
@@ -2514,5 +2729,306 @@ mod tests {
         let missing = room.get_event_raw(event_id!("$missing").to_string()).await.unwrap();
 
         assert!(missing.is_none());
+    }
+
+    /// Collects deliveries so a test can wait for them.
+    struct CollectingStateListener(Arc<StdMutex<Vec<String>>>);
+
+    impl CustomStateEventListener for CollectingStateListener {
+        fn on_event(&self, event_json: String) {
+            self.0.lock().unwrap().push(event_json);
+        }
+    }
+
+    /// Wait until `count` events have been delivered, failing rather than
+    /// hanging if they never arrive.
+    async fn wait_for_deliveries(
+        collected: &Arc<StdMutex<Vec<String>>>,
+        count: usize,
+    ) -> Vec<serde_json::Value> {
+        for _ in 0..250 {
+            let events = collected.lock().unwrap().clone();
+            if events.len() >= count {
+                return events.iter().map(|raw| serde_json::from_str(raw).unwrap()).collect();
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("timed out waiting for {count} state event(s)");
+    }
+
+    fn custom_state_event_with_id(
+        state_key: &str,
+        event_id: &str,
+        content: serde_json::Value,
+    ) -> Raw<AnySyncStateEvent> {
+        Raw::from_json_string(
+            serde_json::json!({
+                "type": CUSTOM_STATE_TYPE,
+                "state_key": state_key,
+                "sender": "@alice:example.com",
+                "event_id": event_id,
+                "origin_server_ts": 1_000_000,
+                "content": content,
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// The reason this subscription exists: a custom state event written
+    /// before anyone subscribed is still delivered, because the bootstrap
+    /// reads room state rather than replaying a timeline. The timeline-based
+    /// sibling sees nothing here.
+    ///
+    /// This covers the state-store read path within one client;
+    /// [`state_written_before_the_client_existed_is_delivered`] covers it
+    /// across a restart.
+    #[tokio::test]
+    async fn state_written_before_subscribing_is_delivered() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event(
+                    "@alice:example.com",
+                    serde_json::json!({"step": "review"}),
+                )),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec![CUSTOM_STATE_TYPE.to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        let events = wait_for_deliveries(&collected, 1).await;
+
+        assert_eq!(events[0]["type"], CUSTOM_STATE_TYPE);
+        assert_eq!(events[0]["state_key"], "@alice:example.com");
+        assert_eq!(events[0]["sender"], "@alice:example.com");
+        assert_eq!(events[0]["content"]["step"], "review");
+    }
+
+    #[tokio::test]
+    async fn state_arriving_after_subscribing_is_delivered() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server.sync_joined_room(&client, room_id).await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec![CUSTOM_STATE_TYPE.to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event(
+                    "@bob:example.com",
+                    serde_json::json!({"step": "draft"}),
+                )),
+            )
+            .await;
+
+        let events = wait_for_deliveries(&collected, 1).await;
+
+        assert_eq!(events[0]["state_key"], "@bob:example.com");
+        assert_eq!(events[0]["content"]["step"], "draft");
+    }
+
+    /// The bootstrap and live sync both see the same event; the subscriber
+    /// should see it once.
+    #[tokio::test]
+    async fn the_same_state_event_is_not_delivered_twice() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let event = custom_state_event_with_id(
+            "@alice:example.com",
+            "$v1",
+            serde_json::json!({"step": "review"}),
+        );
+
+        let sdk_room = server
+            .sync_room(&client, JoinedRoomBuilder::new(room_id).add_state_event(event.clone()))
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec![CUSTOM_STATE_TYPE.to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        wait_for_deliveries(&collected, 1).await;
+
+        // The same event again, as a re-sync would deliver it.
+        server.sync_room(&client, JoinedRoomBuilder::new(room_id).add_state_event(event)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert_eq!(collected.lock().unwrap().len(), 1, "the event was delivered more than once");
+    }
+
+    /// A state event is superseded, not repeated: a new event in the same slot
+    /// is a change the subscriber needs.
+    #[tokio::test]
+    async fn a_superseding_state_event_is_delivered() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event_with_id(
+                    "@alice:example.com",
+                    "$v1",
+                    serde_json::json!({"step": "review"}),
+                )),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec![CUSTOM_STATE_TYPE.to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        wait_for_deliveries(&collected, 1).await;
+
+        server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event_with_id(
+                    "@alice:example.com",
+                    "$v2",
+                    serde_json::json!({"step": "approved"}),
+                )),
+            )
+            .await;
+
+        let events = wait_for_deliveries(&collected, 2).await;
+
+        assert_eq!(events[0]["content"]["step"], "review");
+        assert_eq!(events[1]["content"]["step"], "approved");
+    }
+
+    #[tokio::test]
+    async fn other_state_event_types_are_not_delivered() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event(
+                    "@alice:example.com",
+                    serde_json::json!({"step": "review"}),
+                )),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec!["com.example.some.other.type".to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        // Nothing to wait for; give the bootstrap time to have got it wrong.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+
+        assert!(collected.lock().unwrap().is_empty());
+    }
+
+    /// The state store is queried per type, so "every type" cannot be
+    /// bootstrapped. Rejecting the call is better than silently degrading to
+    /// live-only delivery, which is the bug this method exists to fix.
+    #[tokio::test]
+    async fn subscribing_without_an_event_type_is_rejected() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!test:example.com");
+
+        let sdk_room = server.sync_joined_room(&client, room_id).await;
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let result = room
+            .subscribe_to_custom_state_events(vec![], Box::new(CollectingStateListener(collected)));
+
+        assert!(result.is_err());
+    }
+
+    /// The acceptance criterion in full: a subscriber on a fresh client over a
+    /// persisted store — one that never syncs at all — still receives a state
+    /// event written before that client existed.
+    #[tokio::test]
+    async fn state_written_before_the_client_existed_is_delivered() {
+        let server = MatrixMockServer::new().await;
+        let dir = tempdir().unwrap();
+        let room_id = room_id!("!test:example.com");
+
+        // A first client puts the state into the store, then goes away.
+        {
+            let client = server
+                .client_builder()
+                .on_builder(|builder| builder.sqlite_store(dir.path(), None))
+                .build()
+                .await;
+            server
+                .sync_room(
+                    &client,
+                    JoinedRoomBuilder::new(room_id).add_state_event(custom_state_event(
+                        "@alice:example.com",
+                        serde_json::json!({"step": "review"}),
+                    )),
+                )
+                .await;
+        }
+
+        // A second client over the same store. It never syncs.
+        let client = server
+            .client_builder()
+            .on_builder(|builder| builder.sqlite_store(dir.path(), None))
+            .build()
+            .await;
+        let sdk_room = client.get_room(room_id).expect("the room is restored from the store");
+        let room = Room::new(sdk_room, None);
+
+        let collected = Arc::new(StdMutex::new(Vec::new()));
+        let _handle = room
+            .subscribe_to_custom_state_events(
+                vec![CUSTOM_STATE_TYPE.to_owned()],
+                Box::new(CollectingStateListener(collected.clone())),
+            )
+            .unwrap();
+
+        let events = wait_for_deliveries(&collected, 1).await;
+
+        assert_eq!(events[0]["state_key"], "@alice:example.com");
+        assert_eq!(events[0]["content"]["step"], "review");
     }
 }
