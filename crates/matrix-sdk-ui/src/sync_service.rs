@@ -38,6 +38,7 @@ use matrix_sdk::{
     executor::{JoinHandle, spawn},
     sleep::sleep,
 };
+use ruma::events::StateEventType;
 use thiserror::Error;
 use tokio::sync::{
     Mutex as AsyncMutex, OwnedMutexGuard,
@@ -785,6 +786,15 @@ pub struct SyncServiceBuilder {
     /// [`room_list_service::DEFAULT_LIST_TIMELINE_LIMIT`].
     room_list_timeline_limit: u32,
 
+    /// Extra `required_state` entries for the room list service. Defaults to
+    /// empty.
+    ///
+    /// Needed for **custom** state event types: Sliding Sync only delivers what
+    /// `required_state` names, and the SDK's default list covers only types it
+    /// knows about. A custom type left out of it never reaches the state store,
+    /// so reading it back yields `None` however the write went.
+    room_list_extra_required_state: Vec<(StateEventType, String)>,
+
     /// The parent tracing span to use for the tasks within this service.
     ///
     /// Normally this will be [`Span::none`], but it may be useful to assign a
@@ -801,6 +811,7 @@ impl SyncServiceBuilder {
             with_share_pos: true,
             room_list_conn_id: DEFAULT_CONNECTION_ID.to_owned(),
             room_list_timeline_limit: DEFAULT_LIST_TIMELINE_LIMIT,
+            room_list_extra_required_state: Vec::new(),
             parent_span: Span::none(),
         }
     }
@@ -834,6 +845,42 @@ impl SyncServiceBuilder {
         self
     }
 
+    /// Request extra state event types from the server, on top of the ones the
+    /// SDK asks for by default.
+    ///
+    /// **Required to read custom state event types at all.** Sliding Sync only
+    /// delivers the types named in `required_state`, and the SDK's default list
+    /// covers only types it knows about. A custom type left out of it never
+    /// reaches the state store, so `Room::get_state_event` returns `None` for it
+    /// regardless of what the homeserver holds — the write succeeds and the read
+    /// silently sees nothing.
+    ///
+    /// Pass a `"*"` state key to request every state key of a type, as the
+    /// defaults do for `m.call.member` and `m.space.child`. That is what makes
+    /// enumerating a custom type possible.
+    ///
+    /// ```no_run
+    /// # use matrix_sdk_ui::sync_service::SyncService;
+    /// # use ruma::events::StateEventType;
+    /// # async fn example(client: matrix_sdk::Client) -> anyhow::Result<()> {
+    /// let sync_service = SyncService::builder(client)
+    ///     .with_room_list_extra_required_state(vec![(
+    ///         StateEventType::from("com.example.index"),
+    ///         "*".to_owned(),
+    ///     )])
+    ///     .build()
+    ///     .await?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_room_list_extra_required_state(
+        mut self,
+        entries: Vec<(StateEventType, String)>,
+    ) -> Self {
+        self.room_list_extra_required_state = entries;
+        self
+    }
+
     /// Set the parent tracing span to be used for the tasks within this
     /// service.
     pub fn with_parent_span(mut self, parent_span: Span) -> Self {
@@ -853,6 +900,7 @@ impl SyncServiceBuilder {
             with_share_pos,
             room_list_conn_id,
             room_list_timeline_limit,
+            room_list_extra_required_state,
             parent_span,
         } = self;
 
@@ -863,6 +911,7 @@ impl SyncServiceBuilder {
             with_share_pos,
             &room_list_conn_id,
             room_list_timeline_limit,
+            room_list_extra_required_state,
         )
         .await?;
 

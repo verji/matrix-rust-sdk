@@ -129,6 +129,23 @@ pub struct RoomListService {
     ///
     /// `RoomListService` is a simple state-machine.
     state_machine: StateMachine,
+
+    /// Consumer-registered `required_state` entries, appended to
+    /// [`DEFAULT_REQUIRED_STATE`] on both the list config and room
+    /// subscriptions.
+    ///
+    /// Sliding Sync only delivers state event types named in `required_state`,
+    /// and [`DEFAULT_REQUIRED_STATE`] is a fixed allowlist of types the SDK
+    /// itself knows about. Without this, a custom state event type never
+    /// reaches the state store, so [`Room::get_state_event`] returns `None` for
+    /// it no matter what the homeserver holds — the write succeeds and the read
+    /// silently sees nothing.
+    ///
+    /// A `"*"` state key requests every state key of that type, exactly as the
+    /// defaults do for `m.call.member` and `m.space.child`.
+    ///
+    /// [`Room::get_state_event`]: matrix_sdk::Room::get_state_event
+    extra_required_state: Vec<(StateEventType, String)>,
 }
 
 impl RoomListService {
@@ -141,7 +158,8 @@ impl RoomListService {
     /// to create one in this case using
     /// [`EncryptionSyncService`][crate::encryption_sync_service::EncryptionSyncService].
     pub async fn new(client: Client) -> Result<Self, Error> {
-        Self::new_with(client, true, DEFAULT_CONNECTION_ID, DEFAULT_LIST_TIMELINE_LIMIT).await
+        Self::new_with(client, true, DEFAULT_CONNECTION_ID, DEFAULT_LIST_TIMELINE_LIMIT, Vec::new())
+            .await
     }
 
     /// Like [`RoomListService::new`] but with additional configuration options.
@@ -150,6 +168,11 @@ impl RoomListService {
     ///   cross-process position sharing.
     /// - `connection_id`: the Sliding Sync connection ID
     /// - `timeline_limit`: the timeline limit
+    /// - `extra_required_state`: state event types to request in addition to
+    ///   [`DEFAULT_REQUIRED_STATE`]. Required for **custom** state event types:
+    ///   Sliding Sync only sends what `required_state` names, so a type absent
+    ///   from it never reaches the state store and reads it back as `None`. Use
+    ///   a `"*"` state key for every state key of a type.
     ///
     /// [`SlidingSyncBuilder::share_pos`]: matrix_sdk::sliding_sync::SlidingSyncBuilder::share_pos
     pub async fn new_with(
@@ -157,6 +180,7 @@ impl RoomListService {
         share_pos: bool,
         connection_id: &str,
         timeline_limit: u32,
+        extra_required_state: Vec<(StateEventType, String)>,
     ) -> Result<Self, Error> {
         let mut builder = client
             .sliding_sync(connection_id)
@@ -222,6 +246,7 @@ impl RoomListService {
                         DEFAULT_REQUIRED_STATE
                             .iter()
                             .map(|(state_event, value)| (state_event.clone(), (*value).to_owned()))
+                            .chain(extra_required_state.iter().cloned())
                             .collect(),
                     )
                     .filters(Some(assign!(http::request::ListFilters::default(), {
@@ -265,7 +290,7 @@ impl RoomListService {
         // Eagerly subscribe the event cache to sync responses.
         client.event_cache().subscribe()?;
 
-        Ok(Self { client, sliding_sync, state_machine })
+        Ok(Self { client, sliding_sync, state_machine, extra_required_state })
     }
 
     /// Start to sync the room list.
@@ -489,6 +514,7 @@ impl RoomListService {
                     (state_event.clone(), (*value).to_owned())
                 })
             )
+            .chain(self.extra_required_state.iter().cloned())
             .collect(),
             timeline_limit: UInt::from(DEFAULT_ROOM_SUBSCRIPTION_TIMELINE_LIMIT),
         });
