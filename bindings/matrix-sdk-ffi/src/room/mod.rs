@@ -437,16 +437,29 @@ impl Room {
     /// * `event_type` - The type of the event to send.
     ///
     /// * `content` - The content of the event to send encoded as JSON string.
-    pub async fn send_raw(&self, event_type: String, content: String) -> Result<(), ClientError> {
+    ///
+    /// Returns the event ID of the newly created event, matching
+    /// [`Self::send_state_event_raw`].
+    ///
+    /// A caller that writes a custom event and then has to refer back to it —
+    /// an index naming its entries, a record citing its own provenance — needs
+    /// the id, and cannot recover it afterwards: fetching by id requires the id,
+    /// and matching on content is racy. The response already carries it, so
+    /// discarding it here left the id unreachable for no gain.
+    pub async fn send_raw(
+        &self,
+        event_type: String,
+        content: String,
+    ) -> Result<String, ClientError> {
         let content_json: serde_json::Value =
             serde_json::from_str(&content).map_err(|e| ClientError::Generic {
                 msg: format!("Failed to parse JSON: {e}"),
                 details: Some(format!("{e:?}")),
             })?;
 
-        self.inner.send_raw(&event_type, content_json).await?;
+        let response = self.inner.send_raw(&event_type, content_json).await?;
 
-        Ok(())
+        Ok(response.response.event_id.to_string())
     }
 
     /// Send a raw state event to the room.
