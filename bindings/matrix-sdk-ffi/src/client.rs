@@ -60,6 +60,7 @@ use matrix_sdk::{
     sync::Notification,
     task_monitor::BackgroundTaskFailureReason,
 };
+use matrix_sdk_base::crypto::CollectStrategy;
 use matrix_sdk_common::{
     SendOutsideWasm, SyncOutsideWasm, cross_process_lock::CrossProcessLockConfig, stream::StreamExt,
 };
@@ -89,7 +90,7 @@ use ruma::{
     },
     events::{
         AnyMessageLikeEventContent, AnySyncTimelineEvent, AnyToDeviceEvent,
-        GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
+        AnyToDeviceEventContent, GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
         RoomAccountDataEvent as RumaRoomAccountDataEvent,
         direct::DirectEventContent,
         fully_read::FullyReadEventContent,
@@ -2307,6 +2308,79 @@ impl Client {
             std::future::pending::<()>().await;
         })))
     }
+
+    /// Encrypt and send a custom to-device event to specific devices.
+    ///
+    /// The send-side counterpart to
+    /// [`Client::subscribe_to_custom_to_device_events`]. Together they let a
+    /// consumer run a to-device key transport of the kind MatrixRTC uses for
+    /// per-participant SFrame keys — the receive half on its own can read a
+    /// peer's key but never publish one.
+    ///
+    /// The content is Olm-encrypted per recipient device, so the homeserver
+    /// sees `m.room.encrypted` and never the payload. Recipients are named
+    /// explicitly rather than derived from a room, because the point of this
+    /// transport is to address *devices* rather than an audience.
+    ///
+    /// # Arguments
+    ///
+    /// * `recipients` — the devices to encrypt for. One that cannot be resolved
+    ///   is reported back rather than aborting the send, so a single stale
+    ///   device does not deny the rest their key.
+    /// * `event_type` — the Matrix event `type` the recipient sees after
+    ///   decryption.
+    /// * `content` — raw JSON for the event content.
+    ///
+    /// # Returns
+    ///
+    /// The devices that did not receive the message. Empty means all of them
+    /// did.
+    pub async fn encrypt_and_send_custom_to_device(
+        &self,
+        recipients: Vec<ToDeviceRecipient>,
+        event_type: String,
+        content: String,
+    ) -> Result<Vec<ToDeviceRecipient>, ClientError> {
+        let raw_content = Raw::<AnyToDeviceEventContent>::from_json_string(content)?;
+
+        let encryption = self.inner.encryption();
+
+        let mut devices = Vec::with_capacity(recipients.len());
+        let mut unreachable = Vec::new();
+        for recipient in &recipients {
+            let user_id = UserId::parse(&recipient.user_id)?;
+            let device_id: OwnedDeviceId = recipient.device_id.as_str().into();
+            match encryption.get_device(&user_id, &device_id).await? {
+                Some(device) => devices.push(device),
+                // Unknown to this client — never seen, or since deleted. Report
+                // it and carry on; the other recipients can still be served.
+                None => unreachable.push(recipient.clone()),
+            }
+        }
+
+        let failures = encryption
+            .encrypt_and_send_raw_to_device(
+                devices.iter().collect(),
+                &event_type,
+                raw_content,
+                CollectStrategy::AllDevices,
+            )
+            .await?;
+
+        unreachable.extend(failures.into_iter().map(|(user_id, device_id)| ToDeviceRecipient {
+            user_id: user_id.to_string(),
+            device_id: device_id.to_string(),
+        }));
+
+        Ok(unreachable)
+    }
+}
+
+/// One device a custom to-device event is addressed to.
+#[derive(Clone, uniffi::Record)]
+pub struct ToDeviceRecipient {
+    pub user_id: String,
+    pub device_id: String,
 }
 
 /// Removes a registered to-device event handler from the client when dropped.

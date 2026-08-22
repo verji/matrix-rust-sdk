@@ -169,7 +169,8 @@ impl RoomListService {
     /// - `connection_id`: the Sliding Sync connection ID
     /// - `timeline_limit`: the timeline limit
     /// - `extra_required_state`: state event types to request in addition to
-    ///   [`DEFAULT_REQUIRED_STATE`]. Required for **custom** state event types:
+    ///   the crate's `DEFAULT_REQUIRED_STATE`, which is private and so is named
+    ///   here rather than linked. Required for **custom** state event types:
     ///   Sliding Sync only sends what `required_state` names, so a type absent
     ///   from it never reaches the state store and reads it back as `None`. Use
     ///   a `"*"` state key for every state key of a type.
