@@ -15,6 +15,7 @@
 use std::{
     collections::{HashMap, HashSet},
     fmt::Debug,
+    io::Cursor,
     path::PathBuf,
     sync::{Arc, OnceLock},
     time::Duration,
@@ -100,6 +101,7 @@ use ruma::{
         marked_unread::{MarkedUnreadEventContent, UnstableMarkedUnreadEventContent},
         push_rules::PushRulesEventContent,
         room::{
+            MediaSource as RumaMediaSource,
             history_visibility::RoomHistoryVisibilityEventContent,
             join_rules::{
                 AllowRule as RumaAllowRule, JoinRule as RumaJoinRule, RoomJoinRulesEventContent,
@@ -1409,6 +1411,45 @@ impl Client {
         let response = request.await?;
 
         Ok(String::from(response.content_uri))
+    }
+
+    /// Encrypt the given bytes, upload the ciphertext, and return the
+    /// resulting media source as JSON.
+    ///
+    /// This is the counterpart of [`Client::upload_media`] for media that must
+    /// never sit unencrypted on the homeserver and that is *not* carried by an
+    /// `m.room.message`. The returned string is a serialised encrypted
+    /// [`MediaSource`]: the `mxc://` URI together with the key, the IV and the
+    /// hashes needed to decrypt it. It is exactly what
+    /// [`MediaSource::from_json`] accepts, so a caller can keep it inside a
+    /// custom event — or inside an already-encrypted document — and hand it
+    /// back to [`Client::get_media_content`] on the way down.
+    ///
+    /// No MIME type is taken. An encrypted upload always reaches the
+    /// homeserver as `application/octet-stream`, which is part of what it
+    /// hides; the real content type belongs in whatever structure references
+    /// the media, next to this JSON.
+    pub async fn upload_encrypted_media(
+        &self,
+        data: Vec<u8>,
+        progress_watcher: Option<Box<dyn ProgressWatcher>>,
+    ) -> Result<String, ClientError> {
+        let mut cursor = Cursor::new(data);
+        let request = self.inner.upload_encrypted_file(&mut cursor);
+
+        if let Some(progress_watcher) = progress_watcher {
+            let mut subscriber = request.subscribe_to_send_progress();
+            get_runtime_handle().spawn(async move {
+                while let Some(progress) = subscriber.next().await {
+                    progress_watcher.transmission_progress(progress.into());
+                }
+            });
+        }
+
+        let file = request.await?;
+        let media_source = MediaSource::try_from(RumaMediaSource::Encrypted(Box::new(file)))?;
+
+        Ok(media_source.to_json())
     }
 
     pub async fn get_media_content(
