@@ -192,6 +192,11 @@ impl Room {
     }
 
     /// Get the user who created the invite, if any.
+    ///
+    /// Returns `None` when the sender is not in the stripped state the
+    /// homeserver sent with the invitation. Use [`Room::invite_sender`] when
+    /// the sender's ID is needed even in that case — for instance to ignore
+    /// them.
     pub async fn inviter(&self) -> Result<Option<RoomMember>, ClientError> {
         let invite_details = self.inner.invite_details().await?;
 
@@ -199,6 +204,25 @@ impl Room {
             Some(inviter) => Ok(Some(inviter.try_into()?)),
             None => Ok(None),
         }
+    }
+
+    /// Who sent the invitation to this room.
+    ///
+    /// Unlike [`Room::inviter`], this keeps the sender's user ID when the
+    /// member cannot be resolved, which is the ordinary case for a sender the
+    /// homeserver did not include in the stripped state.
+    ///
+    /// Errors if the room is not an invitation, and also if the recipient's own
+    /// `m.room.member` event is not in the store — the sender is named by that
+    /// event, so without it there is nothing to report. Do not read the error
+    /// as "not an invitation"; it does not distinguish the two.
+    pub async fn invite_sender(&self) -> Result<InviteSender, ClientError> {
+        let invite_details = self.inner.invite_details().await?;
+
+        Ok(InviteSender {
+            user_id: invite_details.inviter_id.to_string(),
+            member: invite_details.inviter.map(TryInto::try_into).transpose()?,
+        })
     }
 
     /// The room's current membership state.
@@ -1286,9 +1310,12 @@ impl Room {
         // add the server name from the sender's user id as a fallback value
         if server_names.is_empty()
             && let Ok(invite_details) = self.inner.invite_details().await
-            && let Some(inviter) = invite_details.inviter
         {
-            server_names.push(inviter.user_id().server_name().to_owned());
+            // The sender's ID, not the resolved member: the member is absent
+            // whenever the homeserver left the sender out of the stripped
+            // state, and then this fallback produced no via at all — for a room
+            // whose only reachable via is the sender's server.
+            server_names.push(invite_details.inviter_id.server_name().to_owned());
         }
 
         let room_preview = client.get_room_preview(&room_or_alias_id, server_names).await?;
@@ -1919,6 +1946,26 @@ impl RoomMembersIterator {
             .next(chunk_size)
             .map(|members| members.into_iter().filter_map(|m| m.try_into().ok()).collect())
     }
+}
+
+/// Who sent an invitation.
+///
+/// The two fields answer different questions and are not interchangeable:
+/// `user_id` identifies the sender and is always present, because it is the
+/// sender of the recipient's own `m.room.member` event; `member` is that user
+/// resolved against the room's member store, which fails whenever the
+/// homeserver did not include them in the stripped state it sent with the
+/// invitation.
+///
+/// A caller that needs to act on the sender — ignore them, say — wants
+/// `user_id`. A caller that needs to show them wants `member`, and has to cope
+/// with its absence.
+#[derive(uniffi::Record)]
+pub struct InviteSender {
+    /// The user ID of whoever sent the invitation.
+    pub user_id: String,
+    /// The sender as a room member, when they resolve.
+    pub member: Option<RoomMember>,
 }
 
 /// Information about a member considered to be a room hero.
@@ -3043,5 +3090,91 @@ mod tests {
 
         assert_eq!(events[0]["state_key"], "@alice:example.com");
         assert_eq!(events[0]["content"]["step"], "review");
+    }
+
+    /// A stripped `m.room.member` event, as a homeserver sends in
+    /// `invite_state`.
+    fn stripped_member(
+        sender: &str,
+        state_key: &str,
+        membership: &str,
+    ) -> Raw<ruma::events::AnyStrippedStateEvent> {
+        Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.member",
+                "sender": sender,
+                "state_key": state_key,
+                "content": { "membership": membership },
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// The sender of an invitation is identifiable even when they cannot be
+    /// resolved to a member.
+    ///
+    /// A homeserver is not obliged to put the sender's own `m.room.member`
+    /// event in the stripped state it sends with an invitation, and frequently
+    /// does not. When it does not, `inviter` is `None` — but the sender is
+    /// still named, as the `sender` of the recipient's own membership event, so
+    /// `inviter_id` is there. Callers that only need to identify the sender (to
+    /// ignore them, say) must be able to, and dropping the id at the FFI meant
+    /// they could not: a decline-and-block blocked nobody, silently.
+    #[tokio::test]
+    async fn invite_sender_is_named_even_when_the_member_does_not_resolve() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!invited:localhost");
+
+        // Only our own membership event: the sender is named by it, and is
+        // otherwise absent from the room.
+        let sdk_room =
+            server
+                .sync_room(
+                    &client,
+                    matrix_sdk_test::InvitedRoomBuilder::new(room_id).add_state_event(
+                        stripped_member("@bob:localhost", "@example:localhost", "invite"),
+                    ),
+                )
+                .await;
+        let room = Room::new(sdk_room, None);
+
+        assert!(
+            room.inviter().await.unwrap().is_none(),
+            "the sender is not in the stripped state, so they do not resolve to a member"
+        );
+
+        let sender = room.invite_sender().await.unwrap();
+        assert_eq!(sender.user_id, "@bob:localhost", "the sender is still named");
+        assert!(sender.member.is_none(), "and still does not resolve");
+    }
+
+    /// When the homeserver does include the sender, both halves are present and
+    /// agree with each other.
+    #[tokio::test]
+    async fn invite_sender_carries_the_member_when_it_resolves() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!invited2:localhost");
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                matrix_sdk_test::InvitedRoomBuilder::new(room_id)
+                    .add_state_event(stripped_member(
+                        "@bob:localhost",
+                        "@example:localhost",
+                        "invite",
+                    ))
+                    .add_state_event(stripped_member("@bob:localhost", "@bob:localhost", "join")),
+            )
+            .await;
+        let room = Room::new(sdk_room, None);
+
+        let sender = room.invite_sender().await.unwrap();
+        assert_eq!(sender.user_id, "@bob:localhost");
+        let member = sender.member.expect("the sender is in the stripped state");
+        assert_eq!(member.user_id, "@bob:localhost", "the two halves name the same user");
     }
 }
