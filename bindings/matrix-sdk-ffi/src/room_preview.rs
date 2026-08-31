@@ -19,7 +19,7 @@ use ruma::room::{JoinRuleSummary, RoomType as RumaRoomType};
 use crate::{
     client::{AllowRule, JoinRule},
     error::ClientError,
-    room::{Membership, RoomHero},
+    room::{InviteSender, Membership, RoomHero},
     room_member::{RoomMember, RoomMemberWithSenderInfo},
     utils::AsyncRuntimeDropped,
 };
@@ -72,10 +72,27 @@ impl RoomPreview {
     }
 
     /// Get the user who created the invite, if any.
+    ///
+    /// Absent when the sender is not in the stripped state the homeserver sent
+    /// with the invitation. Use [`RoomPreview::invite_sender`] to identify them
+    /// even in that case.
     pub async fn inviter(&self) -> Option<RoomMember> {
         let room = self.client.get_room(&self.inner.room_id)?;
         let invite_details = room.invite_details().await.ok()?;
         invite_details.inviter.and_then(|m| m.try_into().ok())
+    }
+
+    /// Who sent the invitation, when this preview is of an invitation.
+    ///
+    /// Unlike [`RoomPreview::inviter`], this keeps the sender's user ID when
+    /// the member cannot be resolved.
+    pub async fn invite_sender(&self) -> Option<InviteSender> {
+        let room = self.client.get_room(&self.inner.room_id)?;
+        let invite_details = room.invite_details().await.ok()?;
+        Some(InviteSender {
+            user_id: invite_details.inviter_id.to_string(),
+            member: invite_details.inviter.and_then(|m| m.try_into().ok()),
+        })
     }
 
     /// Forget the room if we had access to it, and it was left or banned.

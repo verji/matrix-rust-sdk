@@ -78,11 +78,21 @@ pub struct RoomInfo {
     canonical_alias: Option<String>,
     alternative_aliases: Vec<String>,
     membership: Membership,
+    /// User ID of whoever invited the current user, for a room that is in the
+    /// invited state.
+    ///
+    /// Present whenever the room is an invitation, because it is read off the
+    /// recipient's own membership event rather than looked up. Prefer this over
+    /// `inviter` when the sender only has to be identified — to ignore them,
+    /// say — since `inviter` is frequently absent for reasons that have nothing
+    /// to do with who sent the invitation.
+    inviter_id: Option<String>,
     /// Member who invited the current user to a room that's in the invited
     /// state.
     ///
     /// Can be missing if the room membership invite event is missing from the
-    /// store.
+    /// store, or if the sender is not in the stripped state the homeserver sent
+    /// with the invitation. See `inviter_id`.
     inviter: Option<RoomMember>,
     heroes: Vec<RoomHero>,
     active_members_count: u64,
@@ -149,6 +159,13 @@ impl RoomInfo {
             .ok()
             .map(|p| RoomPowerLevels::new(p, room.own_user_id().to_owned()));
 
+        // Read once and keep both halves: the sender's ID is always there when
+        // the room is an invitation, while resolving them to a member is not.
+        let invite_details = match room.state() {
+            RoomState::Invited => room.invite_details().await.ok(),
+            _ => None,
+        };
+
         Ok(Self {
             id: room.room_id().to_string(),
             encryption_state: room.encryption_state(),
@@ -169,18 +186,13 @@ impl RoomInfo {
             canonical_alias: room.canonical_alias().map(Into::into),
             alternative_aliases: room.alt_aliases().into_iter().map(Into::into).collect(),
             membership: room.state().into(),
-            inviter: match room.state() {
-                RoomState::Invited => room
-                    .invite_details()
-                    .await
-                    .ok()
-                    .and_then(|details| details.inviter)
-                    .map(TryInto::try_into)
-                    .transpose()
-                    .ok()
-                    .flatten(),
-                _ => None,
-            },
+            inviter_id: invite_details.as_ref().map(|d| d.inviter_id.to_string()),
+            inviter: invite_details
+                .and_then(|details| details.inviter)
+                .map(TryInto::try_into)
+                .transpose()
+                .ok()
+                .flatten(),
             heroes: room.heroes().into_iter().map(Into::into).collect(),
             active_members_count: room.active_members_count(),
             invited_members_count: room.invited_members_count(),
