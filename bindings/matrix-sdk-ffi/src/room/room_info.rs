@@ -81,11 +81,15 @@ pub struct RoomInfo {
     /// User ID of whoever invited the current user, for a room that is in the
     /// invited state.
     ///
-    /// Present whenever the room is an invitation, because it is read off the
-    /// recipient's own membership event rather than looked up. Prefer this over
-    /// `inviter` when the sender only has to be identified — to ignore them,
-    /// say — since `inviter` is frequently absent for reasons that have nothing
-    /// to do with who sent the invitation.
+    /// Read off the recipient's own membership event, so it is present whenever
+    /// that event is in the store — the same condition `inviter` carries. It is
+    /// **not** guaranteed merely because the room is an invitation, so callers
+    /// must handle its absence.
+    ///
+    /// Prefer it over `inviter` when the sender only has to be identified — to
+    /// ignore them, say. `inviter` has a second, much more common way of being
+    /// absent: it is a member-store lookup of that sender, which fails whenever
+    /// the homeserver did not include them in the stripped state.
     inviter_id: Option<String>,
     /// Member who invited the current user to a room that's in the invited
     /// state.
@@ -159,9 +163,18 @@ impl RoomInfo {
             .ok()
             .map(|p| RoomPowerLevels::new(p, room.own_user_id().to_owned()));
 
-        // Read once and keep both halves: the sender's ID is always there when
-        // the room is an invitation, while resolving them to a member is not.
-        let invite_details = match room.state() {
+        // One read of the state feeds both `membership` and the invite fields.
+        // Reading it twice around an await let a sync land in between, and the
+        // two could then disagree — a `membership` of `Joined` carrying an
+        // inviter, or an `Invited` whose inviter was dropped for having been
+        // joined a moment ago.
+        let state = room.state();
+
+        // Fetched once and split across the two fields below. Note this is the
+        // *recipient's* own membership event being read: when it is missing
+        // from the store there is no sender to name, so both fields go empty
+        // together.
+        let invite_details = match state {
             RoomState::Invited => room.invite_details().await.ok(),
             _ => None,
         };
@@ -185,7 +198,7 @@ impl RoomInfo {
             is_low_priority: room.is_low_priority(),
             canonical_alias: room.canonical_alias().map(Into::into),
             alternative_aliases: room.alt_aliases().into_iter().map(Into::into).collect(),
-            membership: room.state().into(),
+            membership: state.into(),
             inviter_id: invite_details.as_ref().map(|d| d.inviter_id.to_string()),
             inviter: invite_details
                 .and_then(|details| details.inviter)
@@ -232,5 +245,128 @@ impl RoomInfo {
                 .map(|rules| rules.authorization.explicitly_privilege_room_creators)
                 .unwrap_or_default(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::test_utils::mocks::MatrixMockServer;
+    use matrix_sdk_test::InvitedRoomBuilder;
+    use ruma::{events::AnyStrippedStateEvent, room_id, serde::Raw};
+
+    use super::RoomInfo;
+    use crate::room::Membership;
+
+    /// A stripped `m.room.member`, as a homeserver sends in `invite_state`.
+    fn stripped_member(
+        sender: &str,
+        state_key: &str,
+        membership: &str,
+    ) -> Raw<AnyStrippedStateEvent> {
+        Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.member",
+                "sender": sender,
+                "state_key": state_key,
+                "content": { "membership": membership },
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// The sender is named even when they do not resolve to a member.
+    ///
+    /// This is the ordinary shape of an invitation: the homeserver sends the
+    /// recipient's own membership event, and often nothing about the sender
+    /// beyond their having been its `sender`.
+    #[tokio::test]
+    async fn inviter_id_is_present_when_the_member_does_not_resolve() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                InvitedRoomBuilder::new(room_id!("!invited:localhost")).add_state_event(
+                    stripped_member("@bob:localhost", "@example:localhost", "invite"),
+                ),
+            )
+            .await;
+
+        let info = RoomInfo::new(&sdk_room).await.unwrap();
+
+        assert!(matches!(info.membership, Membership::Invited));
+        assert_eq!(info.inviter_id.as_deref(), Some("@bob:localhost"));
+        assert!(info.inviter.is_none(), "the sender is not in the stripped state");
+    }
+
+    /// Both halves are filled, and name the same user, when the sender
+    /// resolves.
+    #[tokio::test]
+    async fn inviter_id_agrees_with_the_member_when_it_resolves() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                InvitedRoomBuilder::new(room_id!("!invited2:localhost"))
+                    .add_state_event(stripped_member(
+                        "@bob:localhost",
+                        "@example:localhost",
+                        "invite",
+                    ))
+                    .add_state_event(stripped_member("@bob:localhost", "@bob:localhost", "join")),
+            )
+            .await;
+
+        let info = RoomInfo::new(&sdk_room).await.unwrap();
+
+        assert_eq!(info.inviter_id.as_deref(), Some("@bob:localhost"));
+        let inviter = info.inviter.expect("the sender is in the stripped state");
+        assert_eq!(inviter.user_id, "@bob:localhost", "the two halves name the same user");
+    }
+
+    /// Without the recipient's own membership event there is no sender to name,
+    /// and the field is absent even though the room is an invitation.
+    ///
+    /// The doc on `inviter_id` says exactly this. An earlier version of it
+    /// claimed the field was present "whenever the room is an invitation",
+    /// which would have invited callers to skip the null branch — and
+    /// blocking nobody because a null was assumed impossible is the failure
+    /// this change exists to remove.
+    #[tokio::test]
+    async fn inviter_id_is_absent_without_our_own_membership_event() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+
+        let sdk_room = server
+            .sync_room(
+                &client,
+                InvitedRoomBuilder::new(room_id!("!invited3:localhost"))
+                    .add_state_event(stripped_member("@bob:localhost", "@bob:localhost", "join")),
+            )
+            .await;
+
+        let info = RoomInfo::new(&sdk_room).await.unwrap();
+
+        assert!(matches!(info.membership, Membership::Invited), "the room really is an invitation");
+        assert!(info.inviter_id.is_none());
+        assert!(info.inviter.is_none());
+    }
+
+    /// A room that is not an invitation carries neither half.
+    #[tokio::test]
+    async fn a_joined_room_has_no_inviter() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let sdk_room = server.sync_joined_room(&client, room_id!("!joined:localhost")).await;
+
+        let info = RoomInfo::new(&sdk_room).await.unwrap();
+
+        assert!(matches!(info.membership, Membership::Joined));
+        assert!(info.inviter_id.is_none());
+        assert!(info.inviter.is_none());
     }
 }

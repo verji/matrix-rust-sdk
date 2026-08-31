@@ -210,8 +210,12 @@ impl Room {
     ///
     /// Unlike [`Room::inviter`], this keeps the sender's user ID when the
     /// member cannot be resolved, which is the ordinary case for a sender the
-    /// homeserver did not include in the stripped state. Errors if the room is
-    /// not an invitation.
+    /// homeserver did not include in the stripped state.
+    ///
+    /// Errors if the room is not an invitation, and also if the recipient's own
+    /// `m.room.member` event is not in the store — the sender is named by that
+    /// event, so without it there is nothing to report. Do not read the error
+    /// as "not an invitation"; it does not distinguish the two.
     pub async fn invite_sender(&self) -> Result<InviteSender, ClientError> {
         let invite_details = self.inner.invite_details().await?;
 
@@ -1306,9 +1310,12 @@ impl Room {
         // add the server name from the sender's user id as a fallback value
         if server_names.is_empty()
             && let Ok(invite_details) = self.inner.invite_details().await
-            && let Some(inviter) = invite_details.inviter
         {
-            server_names.push(inviter.user_id().server_name().to_owned());
+            // The sender's ID, not the resolved member: the member is absent
+            // whenever the homeserver left the sender out of the stripped
+            // state, and then this fallback produced no via at all — for a room
+            // whose only reachable via is the sender's server.
+            server_names.push(invite_details.inviter_id.server_name().to_owned());
         }
 
         let room_preview = client.get_room_preview(&room_or_alias_id, server_names).await?;

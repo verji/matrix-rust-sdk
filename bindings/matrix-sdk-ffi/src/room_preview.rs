@@ -196,3 +196,128 @@ impl From<Option<RumaRoomType>> for RoomType {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use matrix_sdk::{
+        room_preview::RoomPreview as SdkRoomPreview, test_utils::mocks::MatrixMockServer,
+    };
+    use matrix_sdk_test::InvitedRoomBuilder;
+    use ruma::{events::AnyStrippedStateEvent, room_id, serde::Raw};
+
+    use super::RoomPreview;
+    use crate::utils::AsyncRuntimeDropped;
+
+    /// A stripped `m.room.member`, as a homeserver sends in `invite_state`.
+    fn stripped_member(
+        sender: &str,
+        state_key: &str,
+        membership: &str,
+    ) -> Raw<AnyStrippedStateEvent> {
+        Raw::from_json_string(
+            serde_json::json!({
+                "type": "m.room.member",
+                "sender": sender,
+                "state_key": state_key,
+                "content": { "membership": membership },
+            })
+            .to_string(),
+        )
+        .unwrap()
+    }
+
+    /// A bare preview pointing at a room the client already knows.
+    ///
+    /// `invite_sender` only reads `room_id` off the preview and then consults
+    /// the client's store, so the rest of the preview is irrelevant here.
+    fn preview_of(room_id: &ruma::RoomId) -> SdkRoomPreview {
+        SdkRoomPreview {
+            room_id: room_id.to_owned(),
+            canonical_alias: None,
+            name: None,
+            topic: None,
+            avatar_url: None,
+            num_joined_members: 0,
+            num_active_members: None,
+            room_type: None,
+            join_rule: None,
+            is_world_readable: None,
+            state: None,
+            is_direct: None,
+            heroes: None,
+        }
+    }
+
+    /// The preview names the sender even when they do not resolve to a member —
+    /// the same guarantee `Room::invite_sender` gives, on the other surface.
+    #[tokio::test]
+    async fn invite_sender_is_named_even_when_the_member_does_not_resolve() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!previewed:localhost");
+
+        server
+            .sync_room(
+                &client,
+                InvitedRoomBuilder::new(room_id).add_state_event(stripped_member(
+                    "@bob:localhost",
+                    "@example:localhost",
+                    "invite",
+                )),
+            )
+            .await;
+
+        let preview = RoomPreview::new(AsyncRuntimeDropped::new(client), preview_of(room_id));
+
+        assert!(
+            preview.inviter().await.is_none(),
+            "the sender is not in the stripped state, so they do not resolve"
+        );
+
+        let sender = preview.invite_sender().await.expect("the room is an invitation");
+        assert_eq!(sender.user_id, "@bob:localhost", "the sender is still named");
+        assert!(sender.member.is_none(), "and still does not resolve");
+    }
+
+    /// Both halves are filled, and agree, when the sender resolves.
+    #[tokio::test]
+    async fn invite_sender_carries_the_member_when_it_resolves() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!previewed2:localhost");
+
+        server
+            .sync_room(
+                &client,
+                InvitedRoomBuilder::new(room_id)
+                    .add_state_event(stripped_member(
+                        "@bob:localhost",
+                        "@example:localhost",
+                        "invite",
+                    ))
+                    .add_state_event(stripped_member("@bob:localhost", "@bob:localhost", "join")),
+            )
+            .await;
+
+        let preview = RoomPreview::new(AsyncRuntimeDropped::new(client), preview_of(room_id));
+
+        let sender = preview.invite_sender().await.expect("the room is an invitation");
+        assert_eq!(sender.user_id, "@bob:localhost");
+        let member = sender.member.expect("the sender is in the stripped state");
+        assert_eq!(member.user_id, "@bob:localhost", "the two halves name the same user");
+    }
+
+    /// A room that is not an invitation has no sender to report.
+    #[tokio::test]
+    async fn invite_sender_is_absent_for_a_joined_room() {
+        let server = MatrixMockServer::new().await;
+        let client = server.client_builder().build().await;
+        let room_id = room_id!("!joined:localhost");
+
+        server.sync_joined_room(&client, room_id).await;
+
+        let preview = RoomPreview::new(AsyncRuntimeDropped::new(client), preview_of(room_id));
+
+        assert!(preview.invite_sender().await.is_none());
+    }
+}
