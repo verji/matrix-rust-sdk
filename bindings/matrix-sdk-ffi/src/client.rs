@@ -615,6 +615,85 @@ impl Client {
         Ok(())
     }
 
+    /// Log in as one of an application service's users, without a password.
+    ///
+    /// Sends an `m.login.application_service` login with the application
+    /// service's access token in the `Authorization` header, so the homeserver
+    /// issues the named user a device and access token directly. This works
+    /// where password login is disabled — e.g. a homeserver that only offers
+    /// SSO for interactive login — since it authenticates the application
+    /// service, not a password. `user` may be a full user ID or a localpart,
+    /// and must fall within the application service's user namespace. On
+    /// success the client is restored onto the issued session (using its native
+    /// sliding-sync mode), ready to sync and set up encryption.
+    pub async fn login_application_service(
+        &self,
+        user: String,
+        application_service_token: String,
+        initial_device_name: Option<String>,
+        device_id: Option<String>,
+    ) -> Result<(), ClientError> {
+        let mut body = json!({
+            "type": "m.login.application_service",
+            "identifier": { "type": "m.id.user", "user": user },
+        });
+        if let Some(name) = initial_device_name.as_ref() {
+            body["initial_device_display_name"] = json!(name);
+        }
+        if let Some(device_id) = device_id.as_ref() {
+            body["device_id"] = json!(device_id);
+        }
+
+        let homeserver = self.inner.homeserver();
+        // Append the endpoint's absolute path onto the full base — the way ruma assembles request
+        // URLs — so a homeserver base that carries a path prefix keeps it. `Url::join` with a
+        // relative reference would drop the last path segment.
+        let url = format!("{}/_matrix/client/v3/login", homeserver.as_str().trim_end_matches('/'));
+
+        // The appservice token goes in the Authorization header — the login endpoint reads it there
+        // to authenticate the application service. matrix-sdk's own request path only ever attaches
+        // the *session* token, so the request is sent directly through the client's HTTP client.
+        let response = self
+            .inner
+            .http_client()
+            .post(url)
+            .bearer_auth(&application_service_token)
+            .header("content-type", "application/json")
+            .body(serde_json::to_vec(&body).map_err(ClientError::from_err)?)
+            .send()
+            .await?;
+
+        let status = response.status();
+        let bytes = response.bytes().await?;
+        if !status.is_success() {
+            let text = String::from_utf8_lossy(&bytes);
+            return Err(ClientError::from_str(
+                &format!("application service login failed ({status}): {text}"),
+                None,
+            ));
+        }
+
+        #[derive(serde::Deserialize)]
+        struct ApplicationServiceLoginResponse {
+            user_id: String,
+            access_token: String,
+            device_id: String,
+        }
+        let login: ApplicationServiceLoginResponse =
+            serde_json::from_slice(&bytes).map_err(ClientError::from_err)?;
+
+        let session = Session {
+            access_token: login.access_token,
+            refresh_token: None,
+            user_id: login.user_id,
+            device_id: login.device_id,
+            homeserver_url: homeserver.to_string(),
+            oauth_data: None,
+            sliding_sync_version: SlidingSyncVersion::Native,
+        };
+        self.restore_session(session).await
+    }
+
     /// Login using an email and password.
     pub async fn login_with_email(
         &self,
