@@ -462,12 +462,18 @@ impl<'a> StateLockWriteGuard<'a, RoomEventCacheState> {
         }
 
         // `remove_events_by_position` is responsible of sorting positions.
-        self.state
-            .room_linked_chunk
-            .remove_events_by_position(
-                in_memory_events.into_iter().map(|(_event_id, position)| position).collect(),
-            )
-            .expect("failed to remove an event");
+        if let Err(err) = self.state.room_linked_chunk.remove_events_by_position(
+            in_memory_events.into_iter().map(|(_event_id, position)| position).collect(),
+        ) {
+            // The positions were computed from this linked chunk a moment ago,
+            // and no longer match it. Aborting here kills a WASM client, which
+            // then reloads into the same cache and aborts again. Reset the
+            // room's cache instead — it is rebuilt from the server — and let
+            // the caller stop.
+            error!(?err, "the positions of duplicated events are stale; resetting the room's event cache");
+            self.reset_internal().await?;
+            return Err(EventCacheError::StaleLinkedChunkPosition { details: format!("{err:?}") });
+        }
 
         self.propagate_changes().await
     }

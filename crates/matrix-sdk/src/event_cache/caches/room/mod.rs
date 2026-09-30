@@ -990,6 +990,71 @@ mod timed_tests {
     }
 
     #[async_test]
+    async fn test_stale_position_resets_instead_of_panicking() {
+        use crate::event_cache::EventCacheError;
+
+        let room_id = room_id!("!galette:saucisse.bzh");
+        let f = EventFactory::new().room(room_id).sender(user_id!("@ben:saucisse.bzh"));
+
+        let event_cache_store = Arc::new(MemoryStore::new());
+
+        let event_id1 = event_id!("$1");
+        let ev1 = f.text_msg("hello world").sender(*ALICE).event_id(event_id1).into_event();
+
+        event_cache_store
+            .handle_linked_chunk_updates(
+                LinkedChunkId::Room(room_id),
+                vec![
+                    Update::NewItemsChunk { previous: None, new: ChunkIdentifier::new(0), next: None },
+                    Update::PushItems { at: Position::new(ChunkIdentifier::new(0), 0), items: vec![ev1] },
+                ],
+            )
+            .await
+            .unwrap();
+
+        let client = MockClientBuilder::new(None)
+            .on_builder(|builder| {
+                builder.store_config(
+                    StoreConfig::new(CrossProcessLockConfig::multi_process("hodor"))
+                        .event_cache_store(event_cache_store.clone()),
+                )
+            })
+            .build()
+            .await;
+
+        let event_cache = client.event_cache();
+        event_cache.subscribe().unwrap();
+
+        client.base_client().get_or_create_room(room_id, RoomState::Joined);
+        let room = client.get_room(room_id).unwrap();
+        let (room_event_cache, _drop_handles) = room.event_cache().await.unwrap();
+        assert!(room_event_cache.find_event(event_id1).await.unwrap().is_some());
+
+        // A position the deduplicator found a moment ago, which the in-memory
+        // linked chunk no longer has: the chunk holds one item, not six.
+        let stale = Position::new(ChunkIdentifier::new(0), 5);
+        let outcome = {
+            let mut state = room_event_cache.inner.state.write().await.unwrap();
+            state.remove_events(vec![(event_id1.to_owned(), stale)], Vec::new()).await
+        };
+
+        // An error, not an abort: this used to `expect`, which kills a WASM client.
+        assert_matches!(outcome, Err(EventCacheError::StaleLinkedChunkPosition { .. }));
+
+        // And the room's linked chunk was reset, to be rebuilt from the server:
+        // in memory…
+        assert!(room_event_cache.events().await.unwrap().is_empty());
+
+        // … and in the store.
+        let linked_chunk = from_all_chunks::<3, _, _>(
+            event_cache_store.load_all_chunks(LinkedChunkId::Room(room_id)).await.unwrap(),
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(linked_chunk.num_items(), 0);
+    }
+
+    #[async_test]
     async fn test_clear() {
         let room_id = room_id!("!galette:saucisse.bzh");
         let f = EventFactory::new().room(room_id).sender(user_id!("@ben:saucisse.bzh"));

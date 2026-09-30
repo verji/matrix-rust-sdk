@@ -734,12 +734,15 @@ impl<'a> StateLockWriteGuard<'a, ThreadEventCacheState> {
         }
 
         // `remove_events_by_position` is responsible of sorting positions.
-        self.state
-            .thread_linked_chunk
-            .remove_events_by_position(
-                in_memory_events.into_iter().map(|(_event_id, position)| position).collect(),
-            )
-            .expect("failed to remove an event");
+        if let Err(err) = self.state.thread_linked_chunk.remove_events_by_position(
+            in_memory_events.into_iter().map(|(_event_id, position)| position).collect(),
+        ) {
+            // As for the room's cache: stale positions reset the thread's
+            // cache rather than abort the process.
+            error!(?err, "the positions of duplicated events are stale; resetting the thread's event cache");
+            self.reset_internal().await?;
+            return Err(EventCacheError::StaleLinkedChunkPosition { details: format!("{err:?}") });
+        }
 
         self.state.propagate_changes(&self.store).await
     }

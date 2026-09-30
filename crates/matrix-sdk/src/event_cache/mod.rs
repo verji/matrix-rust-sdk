@@ -172,6 +172,19 @@ pub enum EventCacheError {
     #[error("Unable to load any of the pinned events.")]
     UnableToLoadPinnedEvents,
 
+    /// The positions of duplicated events no longer matched the in-memory
+    /// linked chunk when they were removed.
+    ///
+    /// The cache the events were removed from has been reset — it is derived
+    /// data, rebuilt from the server — rather than the process aborted, which
+    /// is what the `expect` this replaces did, and which kills a WASM client
+    /// outright.
+    #[error("the positions of duplicated events were stale; the cache was reset: {details}")]
+    StaleLinkedChunkPosition {
+        /// A string containing details about the error.
+        details: String,
+    },
+
     /// An error happened when reading the metadata of a linked chunk, upon
     /// reload.
     #[error("the linked chunk metadata is invalid: {details}")]
