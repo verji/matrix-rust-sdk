@@ -1005,8 +1005,15 @@ mod timed_tests {
             .handle_linked_chunk_updates(
                 LinkedChunkId::Room(room_id),
                 vec![
-                    Update::NewItemsChunk { previous: None, new: ChunkIdentifier::new(0), next: None },
-                    Update::PushItems { at: Position::new(ChunkIdentifier::new(0), 0), items: vec![ev1] },
+                    Update::NewItemsChunk {
+                        previous: None,
+                        new: ChunkIdentifier::new(0),
+                        next: None,
+                    },
+                    Update::PushItems {
+                        at: Position::new(ChunkIdentifier::new(0), 0),
+                        items: vec![ev1],
+                    },
                 ],
             )
             .await

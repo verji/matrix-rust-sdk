@@ -498,9 +498,9 @@ impl Room {
     ///
     /// A caller that writes a custom event and then has to refer back to it —
     /// an index naming its entries, a record citing its own provenance — needs
-    /// the id, and cannot recover it afterwards: fetching by id requires the id,
-    /// and matching on content is racy. The response already carries it, so
-    /// discarding it here left the id unreachable for no gain.
+    /// the id, and cannot recover it afterwards: fetching by id requires the
+    /// id, and matching on content is racy. The response already carries
+    /// it, so discarding it here left the id unreachable for no gain.
     pub async fn send_raw(
         &self,
         event_type: String,

@@ -16,7 +16,6 @@ use std::{fmt::Debug, sync::Arc};
 
 use matrix_sdk::Client;
 use matrix_sdk_common::{SendOutsideWasm, SyncOutsideWasm};
-use ruma::events::StateEventType;
 use matrix_sdk_ui::{
     sync_service::{
         State as MatrixSyncServiceState, SyncService as MatrixSyncService,
@@ -24,6 +23,7 @@ use matrix_sdk_ui::{
     },
     unable_to_decrypt_hook::UtdHookManager,
 };
+use ruma::events::StateEventType;
 
 use crate::{
     TaskHandle, error::ClientError, helpers::unwrap_or_clone_arc, platform::tracing::Span,

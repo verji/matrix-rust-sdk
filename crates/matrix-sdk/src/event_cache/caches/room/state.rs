@@ -470,7 +470,10 @@ impl<'a> StateLockWriteGuard<'a, RoomEventCacheState> {
             // then reloads into the same cache and aborts again. Reset the
             // room's cache instead — it is rebuilt from the server — and let
             // the caller stop.
-            error!(?err, "the positions of duplicated events are stale; resetting the room's event cache");
+            error!(
+                ?err,
+                "the positions of duplicated events are stale; resetting the room's event cache"
+            );
             self.state.room_linked_chunk.reset();
             self.propagate_changes().await?;
 

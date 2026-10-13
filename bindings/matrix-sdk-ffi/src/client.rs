@@ -64,9 +64,9 @@ use matrix_sdk::{
     sync::Notification,
     task_monitor::BackgroundTaskFailureReason,
 };
+use matrix_sdk_base::crypto::CollectStrategy;
 #[cfg(feature = "experimental-x509-identity-verification")]
 use matrix_sdk_base::crypto::x509::RawX509Signature;
-use matrix_sdk_base::crypto::CollectStrategy;
 use matrix_sdk_common::{
     SendOutsideWasm, SyncOutsideWasm, cross_process_lock::CrossProcessLockConfig, stream::StreamExt,
 };
@@ -98,8 +98,7 @@ use ruma::{
     },
     events::{
         AnyMessageLikeEventContent, AnySyncTimelineEvent, AnyToDeviceEvent,
-        AnyToDeviceEventContent,
-        GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
+        AnyToDeviceEventContent, GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
         RoomAccountDataEvent as RumaRoomAccountDataEvent, RoomAccountDataEventType,
         ToDeviceEventType,
         direct::DirectEventContent,
@@ -695,14 +694,16 @@ impl Client {
         }
 
         let homeserver = self.inner.homeserver();
-        // Append the endpoint's absolute path onto the full base — the way ruma assembles request
-        // URLs — so a homeserver base that carries a path prefix keeps it. `Url::join` with a
-        // relative reference would drop the last path segment.
+        // Append the endpoint's absolute path onto the full base — the way ruma
+        // assembles request URLs — so a homeserver base that carries a path
+        // prefix keeps it. `Url::join` with a relative reference would drop the
+        // last path segment.
         let url = format!("{}/_matrix/client/v3/login", homeserver.as_str().trim_end_matches('/'));
 
-        // The appservice token goes in the Authorization header — the login endpoint reads it there
-        // to authenticate the application service. matrix-sdk's own request path only ever attaches
-        // the *session* token, so the request is sent directly through the client's HTTP client.
+        // The appservice token goes in the Authorization header — the login endpoint
+        // reads it there to authenticate the application service. matrix-sdk's
+        // own request path only ever attaches the *session* token, so the
+        // request is sent directly through the client's HTTP client.
         let response = self
             .inner
             .http_client()
