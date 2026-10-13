@@ -20,13 +20,13 @@
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
-    time::SystemTime,
 };
 
 use matrix_sdk_common::executor::spawn;
 use ruma::{
     OwnedRoomId, SecondsSinceUnixEpoch,
     events::{OriginalSyncStateEvent, call::member::CallMemberEventContent},
+    time::SystemTime,
 };
 use tracing::warn;
 
