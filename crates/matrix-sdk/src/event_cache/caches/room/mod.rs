@@ -1045,13 +1045,13 @@ mod timed_tests {
         // in memory…
         assert!(room_event_cache.events().await.unwrap().is_empty());
 
-        // … and in the store.
+        // … and in the store, where a reset leaves either no chunk at all or
+        // an empty one.
         let linked_chunk = from_all_chunks::<3, _, _>(
             event_cache_store.load_all_chunks(LinkedChunkId::Room(room_id)).await.unwrap(),
         )
-        .unwrap()
         .unwrap();
-        assert_eq!(linked_chunk.num_items(), 0);
+        assert!(linked_chunk.is_none_or(|linked_chunk| linked_chunk.num_items() == 0));
     }
 
     #[async_test]
