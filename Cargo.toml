@@ -255,15 +255,15 @@ lto = false
 [patch.crates-io]
 # Aligned ruma fork carrying the MSC4016 FLOE type (unstable-msc4016). Fork-only
 # plumbing: this git-pin drops once the FLOE type is upstream on crates.io.
-ruma = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-common = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-events = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-client-api = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-federation-api = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-html = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-identifiers-validation = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-macros = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
-ruma-signatures = { git = "https://github.com/verji/ruma", rev = "b7afc1f37" }
+ruma = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-common = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-events = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-client-api = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-federation-api = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-html = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-identifiers-validation = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-macros = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
+ruma-signatures = { git = "https://github.com/verji/ruma", rev = "b42480dff" }
 async-compat = { git = "https://github.com/element-hq/async-compat", rev = "5a27c8b290f1f1dcfc0c4ec22c464e38528aa591" }
 zxcvbn = { git = "https://github.com/shssoichiro/zxcvbn-rs", rev = "4e8e784b23541d118800df84feedf8160879d1af" }
 const_panic = { git = "https://github.com/jplatte/const_panic", rev = "e0b317a9a7bde2d48a7d15b6a60d70e4a41d3b5f" }

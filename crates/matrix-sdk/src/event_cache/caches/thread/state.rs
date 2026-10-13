@@ -740,7 +740,10 @@ impl<'a> StateLockWriteGuard<'a, ThreadEventCacheState> {
             // As for the room's cache: stale positions reset the thread's
             // cache rather than abort the process.
             error!(?err, "the positions of duplicated events are stale; resetting the thread's event cache");
-            self.reset_internal().await?;
+            self.state.thread_linked_chunk.reset();
+            self.state.propagate_changes(&self.store).await?;
+            self.state.waited_for_initial_prev_token = false;
+
             return Err(EventCacheError::StaleLinkedChunkPosition { details: format!("{err:?}") });
         }
 

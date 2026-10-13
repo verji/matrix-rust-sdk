@@ -471,7 +471,17 @@ impl<'a> StateLockWriteGuard<'a, RoomEventCacheState> {
             // room's cache instead — it is rebuilt from the server — and let
             // the caller stop.
             error!(?err, "the positions of duplicated events are stale; resetting the room's event cache");
-            self.reset_internal().await?;
+            self.state.room_linked_chunk.reset();
+            self.propagate_changes().await?;
+
+            // As when the linked chunk cannot be replaced: pretend we never
+            // waited for the initial prev-batch token, and say we are not at
+            // the start of the timeline, since we no longer know.
+            self.state.waited_for_initial_prev_token = false;
+            self.state
+                .pagination_status
+                .set(SharedPaginationStatus::Idle { hit_timeline_start: false });
+
             return Err(EventCacheError::StaleLinkedChunkPosition { details: format!("{err:?}") });
         }
 

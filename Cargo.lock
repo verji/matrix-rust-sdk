@@ -51,6 +51,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "aes-gcm"
+version = "0.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f2b8006a0c83f52b62ba44a97b58bf76fe2f70a329e588f67f89691d93d498f"
+dependencies = [
+ "aead",
+ "aes",
+ "cipher",
+ "ctr",
+ "ctutils",
+ "ghash",
+]
+
+[[package]]
 name = "aho-corasick"
 version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1330,7 +1344,7 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "curve25519-dalek-derive",
- "digest 0.11.2",
+ "digest 0.11.3",
  "fiat-crypto",
  "rand_core 0.10.1",
  "rustc_version",
@@ -1649,9 +1663,9 @@ dependencies = [
 
 [[package]]
 name = "digest"
-version = "0.11.2"
+version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4850db49bf08e663084f7fb5c87d202ef91a3907271aff24a94eb97ff039153c"
+checksum = "f1dd6dbb5841937940781866fa1281a1ff7bd3bf827091440879f9994983d5c2"
 dependencies = [
  "block-buffer 0.12.1",
  "const-oid 0.10.2",
@@ -1687,7 +1701,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1794,7 +1808,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2181,6 +2195,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "floe-rs"
+version = "0.1.0"
+source = "git+https://github.com/verji/floe-rs.git?rev=be6c01e7f186e35cb7d06e6aa96d1ffdf415be41#be6c01e7f186e35cb7d06e6aa96d1ffdf415be41"
+dependencies = [
+ "aead",
+ "aes-gcm",
+ "digest 0.11.3",
+ "getrandom 0.4.3",
+ "hkdf",
+ "hybrid-array",
+ "rand_core 0.10.1",
+ "sha2 0.11.0",
+ "subtle",
+ "thiserror 2.0.20",
+ "zerocopy",
+ "zeroize",
+]
+
+[[package]]
 name = "fnv"
 version = "1.0.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2389,6 +2422,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ghash"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eecf2d5dc9b66b732b97707a0210906b1d30523eb773193ab777c0c84b3e8d5"
+dependencies = [
+ "polyval",
+]
+
+[[package]]
 name = "gimli"
 version = "0.32.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2565,7 +2607,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
- "digest 0.11.2",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -2674,6 +2716,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "818356c5132c1fede50f837ca96afbe78ff42413047f4abb886217845e1b6c8c"
 dependencies = [
  "typenum",
+ "zerocopy",
 ]
 
 [[package]]
@@ -3124,7 +3167,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi",
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3564,7 +3607,7 @@ dependencies = [
  "async-trait",
  "axum",
  "backon",
- "base64",
+ "base64 0.22.1",
  "bytes",
  "bytesize",
  "cfg-if",
@@ -3725,6 +3768,7 @@ name = "matrix-sdk-crypto"
 version = "0.19.1"
 dependencies = [
  "aes",
+ "aes-gcm",
  "anyhow",
  "as_variant",
  "assert_matches",
@@ -3736,14 +3780,17 @@ dependencies = [
  "cms",
  "ctr",
  "eyeball",
+ "floe-rs",
  "futures-core",
  "futures-executor",
  "futures-util",
+ "hex",
  "hkdf",
  "hmac",
  "http",
  "insta",
  "itertools 0.15.0",
+ "js-sys",
  "js_option",
  "matrix-sdk-common",
  "matrix-sdk-qrcode",
@@ -3776,6 +3823,10 @@ dependencies = [
  "uniffi",
  "url",
  "vodozemac",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "zerocopy",
  "zeroize",
 ]
 
@@ -3816,6 +3867,7 @@ dependencies = [
  "anyhow",
  "async-compat",
  "async-trait",
+ "base64 0.22.1",
  "chrono",
  "console_error_panic_hook",
  "extension-trait",
@@ -3834,6 +3886,7 @@ dependencies = [
  "matrix-sdk-crypto",
  "matrix-sdk-ffi-macros",
  "matrix-sdk-sqlite",
+ "matrix-sdk-test",
  "matrix-sdk-ui",
  "mime",
  "oauth2",
@@ -3861,6 +3914,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "wiremock",
  "zeroize",
  "zxcvbn",
 ]
@@ -4357,7 +4411,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4628,7 +4682,7 @@ version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "112d82ceb8c5bf524d9af484d4e4970c9fd5a0cc15ba14ad93dccd28873b0629"
 dependencies = [
- "digest 0.11.2",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -4866,6 +4920,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "polyval"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0fa31d631f2b2cb2a544d0aa321ce847a94764d701ca2becc411138b93d49cd"
+dependencies = [
+ "cpubits",
+ "cpufeatures 0.3.0",
+ "universal-hash",
+]
+
+[[package]]
 name = "portable-atomic"
 version = "1.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4963,7 +5028,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
- "itertools 0.10.5",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -5059,7 +5124,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5497,8 +5562,7 @@ dependencies = [
 [[package]]
 name = "ruma"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fc484e2676b31e677a3e3646078c01d41529eed3360226804a857db8428cc978"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "assign",
  "js_int",
@@ -5516,8 +5580,7 @@ dependencies = [
 [[package]]
 name = "ruma-client-api"
 version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a6187ddda33fefafe3a738f40075ce2e8a7ecd3606998d2a885cf6dac73629d"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "as_variant",
  "assign",
@@ -5539,8 +5602,7 @@ dependencies = [
 [[package]]
 name = "ruma-common"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dfbfb1235d65ebd89e169c67cc120a6608530b3445babb8689baba7ef2e72a12"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "as_variant",
  "base64 0.23.1",
@@ -5573,8 +5635,7 @@ dependencies = [
 [[package]]
 name = "ruma-events"
 version = "0.35.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "140e7848282c33721f4bc4f1e5922fa5eb92d3a7b497ec4b71086b047ee7cd0d"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "as_variant",
  "indexmap",
@@ -5598,8 +5659,7 @@ dependencies = [
 [[package]]
 name = "ruma-federation-api"
 version = "0.16.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1597e46af9ecbdcb52ea96f6fe811f5977ac66779dab25d2e4bfb9c55bc5371"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "http",
  "http-auth",
@@ -5619,8 +5679,7 @@ dependencies = [
 [[package]]
 name = "ruma-html"
 version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e27e35e6c36fa1abc4def766e474a0f2f709e87f1602d57ec34d41b09253da4"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "as_variant",
  "html5ever",
@@ -5631,8 +5690,7 @@ dependencies = [
 [[package]]
 name = "ruma-identifiers-validation"
 version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9d6cff00317675f487c4e7ccfb18875a14c5a14867b51d13f2a826053f03c432"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "js_int",
  "thiserror 2.0.20",
@@ -5641,8 +5699,7 @@ dependencies = [
 [[package]]
 name = "ruma-macros"
 version = "0.20.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d4b8571408bf1aefd0f06ea49e9d19551bcf4ba7388e19848adcd9291547c6cb"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "as_variant",
  "cfg-if",
@@ -5658,8 +5715,7 @@ dependencies = [
 [[package]]
 name = "ruma-signatures"
 version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b1457e32794f6200c0d45dc3f75f47ac23414825492fe643fc550bb90af80a40"
+source = "git+https://github.com/verji/ruma?rev=b42480dff#b42480dffac0d4776638e187861ffb86dbf83b5f"
 dependencies = [
  "base64 0.23.1",
  "ed25519-dalek",
@@ -5736,7 +5792,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5794,7 +5850,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6174,7 +6230,7 @@ checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
- "digest 0.11.2",
+ "digest 0.11.3",
 ]
 
 [[package]]
@@ -6306,7 +6362,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6653,10 +6709,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6679,7 +6735,7 @@ dependencies = [
  "parking_lot",
  "rustix",
  "signal-hook",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7937,7 +7993,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -361,6 +361,8 @@ pub trait RawX509Verifier: SyncOutsideWasm + SendOutsideWasm + Debug {
     /// Also validates that the certificate used for the signature is issued via
     /// one of our trusted CAs.
     fn verify(&self, message: Vec<u8>, sig: RawX509Signature) -> bool;
+}
+
 /// A listener for raw to-device events of arbitrary `type`, delivered after
 /// Olm decryption. Used by [`Client::subscribe_to_custom_to_device_events`] to
 /// expose custom Matrix to-device event types (for example Element Call's
@@ -2638,6 +2640,9 @@ impl Client {
                     Err(error) => warn!("Skipping malformed to-device message: {error}"),
                 }
             }
+        })))
+    }
+
     /// Subscribe to raw to-device events of arbitrary `type`, including custom
     /// to-device types not represented in the curated to-device event enums.
     ///
@@ -2846,6 +2851,8 @@ impl TryFrom<SdkToDeviceMessage> for ToDeviceMessage {
             encryption_info: message.encryption_info.as_ref().map(Into::into),
         })
     }
+}
+
 /// Removes a registered to-device event handler from the client when dropped.
 struct ToDeviceEventHandlerGuard {
     client: MatrixClient,
