@@ -719,7 +719,7 @@ impl Client {
         if !status.is_success() {
             let text = String::from_utf8_lossy(&bytes);
             return Err(ClientError::from_str(
-                &format!("application service login failed ({status}): {text}"),
+                format!("application service login failed ({status}): {text}"),
                 None,
             ));
         }
@@ -2691,7 +2691,6 @@ impl Client {
         // `crates/matrix-sdk/src/widget/matrix.rs`).
         let handler_handle = {
             let listener = listener.clone();
-            let filter = filter.clone();
             self.inner.add_event_handler(
                 move |raw: Raw<AnyToDeviceEvent>,
                       _encryption_info: Option<EncryptionInfo>,
@@ -2891,10 +2890,10 @@ fn forward_custom_to_device_event(
         }
     };
 
-    if let Some(allowed) = filter {
-        if !allowed.contains(&header.event_type) {
-            return;
-        }
+    if let Some(allowed) = filter
+        && !allowed.contains(&header.event_type)
+    {
+        return;
     }
 
     let content_json =
