@@ -49,4 +49,8 @@ allow-git = [
     # FLOE streaming file encryption; git-pinned until floe-rs publishes to
     # crates.io. Used by matrix-sdk-crypto's file_encryption/floe.
     "https://github.com/poljar/floe.git",
+    # The fork of it that is pinned: its async streaming surface is not upstream yet.
+    "https://github.com/verji/floe-rs.git",
+    # ruma with the MSC4016 FLOE type (unstable-msc4016), until that is upstream.
+    "https://github.com/verji/ruma",
 ]
