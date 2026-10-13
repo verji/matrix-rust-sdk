@@ -114,7 +114,10 @@ thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1.53.1", default-features = false, features = ["sync"] }
 tokio-stream = { version = "0.1.19", default-features = false }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
-tracing-appender = { version = "0.2.5", default-features = false }
+# 0.2.4, not 0.2.5 as upstream asks: 0.2.5 calls the `symlink` crate on every
+# target, and does not compile for wasm32-unknown-unknown, which the bindings are
+# also built for. The native lock file still resolves 0.2.5.
+tracing-appender = { version = "0.2.4", default-features = false }
 tracing-core = { version = "0.1.36", default-features = false }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["std", "smallvec", "fmt"] }
 unicode-normalization = { version = "0.1.25", default-features = false }
