@@ -1608,7 +1608,6 @@ impl Room {
             let listener = listener.clone();
             let filter = filter.clone();
             let already_emitted = already_emitted.clone();
-            let target_room_id = target_room_id.clone();
             self.inner.client().add_event_handler(
                 move |raw: Raw<AnySyncTimelineEvent>, room: SdkRoom| {
                     let listener = listener.clone();
@@ -1719,7 +1718,6 @@ impl Room {
             let listener = listener.clone();
             let filter = filter.clone();
             let delivered = delivered.clone();
-            let target_room_id = target_room_id.clone();
             self.inner.client().add_event_handler(
                 move |raw: Raw<AnySyncStateEvent>, room: SdkRoom| {
                     let listener = listener.clone();
@@ -2018,10 +2016,10 @@ fn forward_custom_event(
         }
     };
 
-    if let Some(allowed) = filter {
-        if !allowed.contains(&header.event_type) {
-            return;
-        }
+    if let Some(allowed) = filter
+        && !allowed.contains(&header.event_type)
+    {
+        return;
     }
 
     let event_id = header.event_id.unwrap_or_default();
