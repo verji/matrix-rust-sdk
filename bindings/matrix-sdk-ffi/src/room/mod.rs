@@ -25,9 +25,9 @@ use futures_util::{StreamExt, pin_mut};
 use matrix_sdk::{
     ComposerDraft as SdkComposerDraft, ComposerDraftType as SdkComposerDraftType,
     DraftAttachment as SdkDraftAttachment, DraftAttachmentContent, DraftThumbnail, EncryptionState,
-    PredecessorRoom as SdkPredecessorRoom, RoomHero as SdkRoomHero, RoomMemberships, RoomState,
-    SuccessorRoom as SdkSuccessorRoom,
-    deserialized_responses::RawAnySyncOrStrippedState,
+    PredecessorRoom as SdkPredecessorRoom, RoomHeroWithProfile as SdkRoomHeroWithProfile,
+    RoomMemberships, RoomState, SuccessorRoom as SdkSuccessorRoom,
+    deserialized_responses::{RawAnySyncOrStrippedState, TimelineEvent as SdkTimelineEvent},
     encryption::LocalTrust,
     event_handler::EventHandlerHandle,
     room::{
@@ -48,7 +48,8 @@ use ruma::{
     assign,
     events::{
         AnyMessageLikeEventContent, AnySyncStateEvent, AnySyncTimelineEvent, StateEventType,
-        receipt::ReceiptThread,
+        receipt::ReceiptThread as RumaReceiptThread,
+        relation::RelationType as RumaRelationType,
         room::{
             MediaSource as RumaMediaSource, avatar::ImageInfo as RumaAvatarImageInfo,
             history_visibility::HistoryVisibility as RumaHistoryVisibility,
@@ -57,6 +58,8 @@ use ruma::{
     },
     serde::Raw,
 };
+use serde::Deserialize;
+use serde_json::value::RawValue as RawJsonValue;
 use tracing::{error, warn};
 
 use self::{power_levels::RoomPowerLevels, room_info::RoomInfo};
@@ -73,10 +76,13 @@ use crate::{
     live_locations_observer::LiveLocationsObserver,
     room_member::{RoomMember, RoomMemberWithSenderInfo},
     room_preview::RoomPreview,
-    ruma::{AudioInfo, FileInfo, ImageInfo, MediaSource, ThumbnailInfo, VideoInfo},
+    ruma::{
+        AudioInfo, FileInfo, ImageInfo, MediaSource, ThumbnailInfo, UserCall, UserStatus, VideoInfo,
+    },
     runtime::get_runtime_handle,
     timeline::{
-        AbstractProgress, LatestEventValue, ReceiptType, SendHandle, Timeline, UploadSource,
+        AbstractProgress, LatestEventValue, ReceiptThread, ReceiptType, SendHandle, Timeline,
+        UploadSource, UserReceipt,
         configuration::{TimelineConfiguration, TimelineFilter},
         threads::{ThreadListService, ThreadSubscription},
     },
@@ -231,8 +237,8 @@ impl Room {
     }
 
     /// Returns the room heroes for this room.
-    pub fn heroes(&self) -> Vec<RoomHero> {
-        self.inner.heroes().into_iter().map(Into::into).collect()
+    pub async fn heroes(&self) -> Vec<RoomHero> {
+        self.inner.heroes().await.into_iter().map(Into::into).collect()
     }
 
     /// Is there a non expired membership with application "m.call" and scope
@@ -368,6 +374,31 @@ impl Room {
         )))
     }
 
+    /// Get the user IDs of the joined and invited members, without the service
+    /// members. The current user is part of the result. Fetches the member list
+    /// if it is not synced yet.
+    pub async fn active_human_member_ids(&self) -> Result<Vec<String>, ClientError> {
+        Ok(self
+            .inner
+            .human_member_ids(RoomMemberships::ACTIVE)
+            .await?
+            .into_iter()
+            .map(String::from)
+            .collect())
+    }
+
+    /// Same as [`Self::active_human_member_ids`], without a request to the
+    /// homeserver, so members can be missing.
+    pub async fn active_human_member_ids_no_sync(&self) -> Result<Vec<String>, ClientError> {
+        Ok(self
+            .inner
+            .human_member_ids_no_sync(RoomMemberships::ACTIVE)
+            .await?
+            .into_iter()
+            .map(String::from)
+            .collect())
+    }
+
     pub async fn member(&self, user_id: String) -> Result<RoomMember, ClientError> {
         let user_id = UserId::parse(&*user_id)?;
         let member = self.inner.get_member(&user_id).await?.context("User not found")?;
@@ -467,9 +498,9 @@ impl Room {
     ///
     /// A caller that writes a custom event and then has to refer back to it —
     /// an index naming its entries, a record citing its own provenance — needs
-    /// the id, and cannot recover it afterwards: fetching by id requires the id,
-    /// and matching on content is racy. The response already carries it, so
-    /// discarding it here left the id unreachable for no gain.
+    /// the id, and cannot recover it afterwards: fetching by id requires the
+    /// id, and matching on content is racy. The response already carries
+    /// it, so discarding it here left the id unreachable for no gain.
     pub async fn send_raw(
         &self,
         event_type: String,
@@ -515,6 +546,59 @@ impl Room {
             self.inner.send_state_event_raw(&event_type, &state_key, content_json).await?;
 
         Ok(response.event_id.to_string())
+    }
+
+    /// The current room state events of the given type, one per state key.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the state events to read. For a type that
+    ///   has no variant of its own, build one from its string representation
+    ///   with `stateEventTypeFromString("com.example.custom")`.
+    ///
+    /// Only the state the sync asked for is stored locally, so for a custom
+    /// event type this is empty unless that type is part of the sliding sync
+    /// `required_state`.
+    pub async fn state_events(
+        &self,
+        event_type: StateEventType,
+    ) -> Result<Vec<RoomStateEvent>, ClientError> {
+        let events = self.inner.get_state_events(event_type).await?;
+
+        Ok(to_state_events(events))
+    }
+
+    /// Subscribe to the room state events of the given type.
+    ///
+    /// The listener is called with the full current list of state events of
+    /// that type, one per state key, immediately and then after every sync
+    /// that changed any of them. All the changes of one sync are reported as a
+    /// single snapshot.
+    ///
+    /// Use the returned [`TaskHandle`] to cancel the subscription.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the state events to listen to. For a type
+    ///   that has no variant of its own, build one from its string
+    ///   representation with `stateEventTypeFromString("com.example.custom")`.
+    pub fn subscribe_to_state_events(
+        self: Arc<Self>,
+        event_type: StateEventType,
+        listener: Box<dyn RoomStateEventsListener>,
+    ) -> Arc<TaskHandle> {
+        let snapshots = self.inner.subscribe_to_state_events(event_type);
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            pin_mut!(snapshots);
+
+            while let Some(snapshot) = snapshots.next().await {
+                match snapshot {
+                    Ok(events) => listener.on_update(to_state_events(events)),
+                    Err(error) => error!("Failed to read the room state: {error}"),
+                }
+            }
+        })))
     }
 
     /// Read a single event of this room as raw JSON.
@@ -836,6 +920,55 @@ impl Room {
         Ok(())
     }
 
+    /// Load the receipt of the given type for the given user in this room,
+    /// optionally scoped to a thread.
+    ///
+    /// The receipt is read from the local store, which is fed by sync, so it
+    /// also reflects receipts sent by the user's other devices. Returns
+    /// `None` if the user has no matching receipt in this room.
+    ///
+    /// Note: [`ReceiptType::FullyRead`] is a marker, not an event receipt,
+    /// and is rejected.
+    pub async fn load_user_receipt(
+        &self,
+        receipt_type: ReceiptType,
+        thread: ReceiptThread,
+        user_id: String,
+    ) -> Result<Option<UserReceipt>, ClientError> {
+        let user_id = UserId::parse(&*user_id)?;
+
+        Ok(self
+            .inner
+            .load_user_receipt(receipt_type.try_into()?, &thread.try_into()?, &user_id)
+            .await?
+            .map(|(event_id, receipt)| UserReceipt {
+                event_id: event_id.to_string(),
+                receipt: receipt.into(),
+            }))
+    }
+
+    /// Send a single receipt of the given type for the given event, optionally
+    /// scoped to a thread.
+    ///
+    /// This allows sending receipts for events without instantiating the
+    /// [`Timeline`] they belong to, e.g. marking a thread as read from its
+    /// root and latest event ids. Note that this won't check whether sending
+    /// the receipt is necessary or valid (i.e. it can move a receipt
+    /// backwards); prefer [`Timeline::send_single_receipt`] when a timeline
+    /// is available.
+    pub async fn send_single_receipt(
+        &self,
+        receipt_type: ReceiptType,
+        thread: ReceiptThread,
+        event_id: String,
+    ) -> Result<(), ClientError> {
+        let event_id = EventId::parse(event_id)?;
+
+        self.inner.send_single_receipt(receipt_type.into(), thread.try_into()?, event_id).await?;
+
+        Ok(())
+    }
+
     /// Mark a room as fully read, by attaching a read receipt to the provided
     /// `event_id`.
     ///
@@ -849,7 +982,11 @@ impl Room {
         let event_id = EventId::parse(event_id)?;
 
         self.inner
-            .send_single_receipt(ReceiptType::FullyRead.into(), ReceiptThread::Unthreaded, event_id)
+            .send_single_receipt(
+                ReceiptType::FullyRead.into(),
+                RumaReceiptThread::Unthreaded,
+                event_id,
+            )
             .await?;
 
         Ok(())
@@ -1062,16 +1199,6 @@ impl Room {
 
         send_handle.try_resend().await?;
 
-        Ok(())
-    }
-
-    /// Clear the event cache storage for the current room.
-    ///
-    /// This will remove all the information related to the event cache, in
-    /// memory and in the persisted storage, if enabled.
-    pub async fn clear_event_cache_storage(&self) -> Result<(), ClientError> {
-        let (room_event_cache, _drop_handles) = self.inner.event_cache().await?;
-        room_event_cache.clear().await?;
         Ok(())
     }
 
@@ -1398,6 +1525,43 @@ impl Room {
             .into())
     }
 
+    /// Either loads the event associated with the `event_id` from the event
+    /// cache or fetches it from the homeserver, along with the events related
+    /// to it (e.g. reactions and edits), fetched recursively.
+    ///
+    /// An optional filter restricts the relation types fetched; no filter
+    /// fetches relations of all types.
+    pub async fn load_or_fetch_event_with_relations(
+        &self,
+        event_id: String,
+        relation_filter: Option<Vec<RelationType>>,
+    ) -> Result<EventWithRelations, ClientError> {
+        let event_id = EventId::parse(event_id)?;
+        let filter = relation_filter.map(|filter| filter.into_iter().map(Into::into).collect());
+
+        let (event, related_events) =
+            self.inner.load_or_fetch_event_with_relations(&event_id, filter, None).await?;
+
+        let as_ffi_event = |event: SdkTimelineEvent| -> Result<Arc<TimelineEvent>, ClientError> {
+            Ok(Arc::new(
+                event
+                    .kind
+                    .into_raw()
+                    .deserialize()?
+                    .into_full_event(self.inner.room_id().to_owned())
+                    .into(),
+            ))
+        };
+
+        Ok(EventWithRelations {
+            event: as_ffi_event(event)?,
+            related_events: related_events
+                .into_iter()
+                .map(as_ffi_event)
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
     /// Subscribe to raw timeline events of arbitrary `type`, including custom
     /// event types not represented in the curated `MessageLikeEventContent` /
     /// `StateEventContent` enums.
@@ -1444,7 +1608,6 @@ impl Room {
             let listener = listener.clone();
             let filter = filter.clone();
             let already_emitted = already_emitted.clone();
-            let target_room_id = target_room_id.clone();
             self.inner.client().add_event_handler(
                 move |raw: Raw<AnySyncTimelineEvent>, room: SdkRoom| {
                     let listener = listener.clone();
@@ -1555,7 +1718,6 @@ impl Room {
             let listener = listener.clone();
             let filter = filter.clone();
             let delivered = delivered.clone();
-            let target_room_id = target_room_id.clone();
             self.inner.client().add_event_handler(
                 move |raw: Raw<AnySyncStateEvent>, room: SdkRoom| {
                     let listener = listener.clone();
@@ -1609,6 +1771,116 @@ impl Room {
             std::future::pending::<()>().await;
         }))))
     }
+}
+
+/// The relation types that can be used to filter related events when calling
+/// [`Room::load_or_fetch_event_with_relations`].
+#[derive(uniffi::Enum)]
+pub enum RelationType {
+    /// An annotation to an event (e.g. a reaction), `m.annotation`.
+    Annotation,
+    /// A reference to another event, `m.reference`.
+    Reference,
+    /// An event that replaces another event (e.g. an edit), `m.replace`.
+    Replacement,
+    /// An event that belongs to a thread, `m.thread`.
+    Thread,
+}
+
+impl From<RelationType> for RumaRelationType {
+    fn from(value: RelationType) -> Self {
+        match value {
+            RelationType::Annotation => Self::Annotation,
+            RelationType::Reference => Self::Reference,
+            RelationType::Replacement => Self::Replacement,
+            RelationType::Thread => Self::Thread,
+        }
+    }
+}
+
+/// An event and the events related to it, as returned by
+/// [`Room::load_or_fetch_event_with_relations`].
+#[derive(uniffi::Record)]
+pub struct EventWithRelations {
+    /// The event itself.
+    pub event: Arc<TimelineEvent>,
+    /// The events related to it, directly or (recursively) through other
+    /// related events.
+    pub related_events: Vec<Arc<TimelineEvent>>,
+}
+
+/// A room state event, as exposed over FFI.
+#[derive(uniffi::Record)]
+pub struct RoomStateEvent {
+    /// The event type, e.g. `m.room.name`.
+    pub event_type: StateEventType,
+    /// The state key this event is stored under.
+    pub state_key: String,
+    /// The event sender.
+    pub sender: String,
+    /// The `content` of the event, as a JSON string.
+    pub content_json: String,
+    /// The event id, or `None` for the stripped state of a room we are only
+    /// invited to.
+    pub event_id: Option<String>,
+    /// When the event was sent, in milliseconds since the Unix epoch, or `None`
+    /// for the stripped state of a room we are only invited to.
+    pub timestamp: Option<u64>,
+}
+
+impl RoomStateEvent {
+    fn from_raw(raw: &RawAnySyncOrStrippedState) -> Result<Self, serde_json::Error> {
+        /// The subset of a state event that is exposed over FFI. Both the sync
+        /// and the stripped shape deserialize into this.
+        #[derive(Deserialize)]
+        struct RoomStateEventHelper<'a> {
+            #[serde(rename = "type")]
+            event_type: StateEventType,
+            state_key: String,
+            sender: String,
+            #[serde(borrow)]
+            content: &'a RawJsonValue,
+            event_id: Option<String>,
+            origin_server_ts: Option<u64>,
+        }
+
+        let json = match raw {
+            RawAnySyncOrStrippedState::Sync(raw) => raw.json(),
+            RawAnySyncOrStrippedState::Stripped(raw) => raw.json(),
+        };
+        let helper: RoomStateEventHelper<'_> = serde_json::from_str(json.get())?;
+
+        Ok(Self {
+            event_type: helper.event_type,
+            state_key: helper.state_key,
+            sender: helper.sender,
+            content_json: helper.content.get().to_owned(),
+            event_id: helper.event_id,
+            timestamp: helper.origin_server_ts,
+        })
+    }
+}
+
+/// Converts the raw state of a room, skipping (and logging) any event that
+/// can't be parsed.
+fn to_state_events(raw_events: Vec<RawAnySyncOrStrippedState>) -> Vec<RoomStateEvent> {
+    raw_events
+        .iter()
+        .filter_map(|raw| match RoomStateEvent::from_raw(raw) {
+            Ok(event) => Some(event),
+            Err(error) => {
+                warn!("Skipping malformed state event: {error}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// A listener for the room state events of a single type, registered with
+/// [`Room::subscribe_to_state_events`].
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait RoomStateEventsListener: SyncOutsideWasm + SendOutsideWasm {
+    fn on_update(&self, events: Vec<RoomStateEvent>);
 }
 
 /// Removes a registered event handler from the client when dropped.
@@ -1744,10 +2016,10 @@ fn forward_custom_event(
         }
     };
 
-    if let Some(allowed) = filter {
-        if !allowed.contains(&header.event_type) {
-            return;
-        }
+    if let Some(allowed) = filter
+        && !allowed.contains(&header.event_type)
+    {
+        return;
     }
 
     let event_id = header.event_id.unwrap_or_default();
@@ -1977,14 +2249,20 @@ pub struct RoomHero {
     display_name: Option<String>,
     /// The avatar URL of the hero.
     avatar_url: Option<String>,
+    /// The hero's user-set status, taken from their global profile.
+    status: Option<UserStatus>,
+    /// The hero's call indicator, taken from their global profile.
+    call: Option<UserCall>,
 }
 
-impl From<SdkRoomHero> for RoomHero {
-    fn from(value: SdkRoomHero) -> Self {
+impl From<SdkRoomHeroWithProfile> for RoomHero {
+    fn from(value: SdkRoomHeroWithProfile) -> Self {
         Self {
             user_id: value.user_id.to_string(),
             display_name: value.display_name.clone(),
             avatar_url: value.avatar_url.as_ref().map(ToString::to_string),
+            status: value.status.map(UserStatus::from),
+            call: value.call.map(UserCall::from),
         }
     }
 }

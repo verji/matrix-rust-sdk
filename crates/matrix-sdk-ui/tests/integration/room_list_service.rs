@@ -432,6 +432,7 @@ async fn test_sync_all_states() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                     ],
                     "filters": {},
                     "timeline_limit": 1,
@@ -446,6 +447,9 @@ async fn test_sync_all_states() -> Result<(), Error> {
                     "rooms": ["*"]
                 },
                 "typing": {
+                    "enabled": true,
+                },
+                "org.matrix.msc4262.profiles": {
                     "enabled": true,
                 },
             },
@@ -2016,7 +2020,10 @@ async fn test_room_sorting() -> Result<(), Error> {
         },
     };
 
-    // Assert rooms are moving.
+    // Assert rooms are moving because their recency (based on the latest event)
+    // have changed.
+
+    // `!r0` is moving.
     assert_entries_batch! {
         [stream]
         remove [ 3 ];
@@ -2024,26 +2031,7 @@ async fn test_room_sorting() -> Result<(), Error> {
         end;
     };
 
-    // All rooms get new messages, so their entries will get updates because of read
-    // receipt updates.
-    //
-    // Starting with r0.
-    assert_entries_batch! {
-        [stream]
-        set [ 0 ] [ "!r0:bar.org" ];
-        end;
-    };
-
-    // Now we have:
-    //
-    // | index | room ID | recency | name |
-    // |-------|---------|---------|------|
-    // | 0     | !r0     | 7       | Bbb  |
-    // | 1     | !r4     | 5       |      |
-    // | 2     | !r3     | 4       |      |
-    // | 3     | !r1     | 3       | Aaa  |
-    // | 4     | !r2     | 1       |      |
-
+    // `!r1` is moving.
     assert_entries_batch! {
         [stream]
         remove [ 3 ];
@@ -2051,23 +2039,15 @@ async fn test_room_sorting() -> Result<(), Error> {
         end;
     };
 
-    // Read receipt update for r1.
+    // `!r2` is supposed to move, but meanwhile, `!r0` receives a read receipt
+    // update.
     assert_entries_batch! {
         [stream]
-        set [ 1 ] [ "!r1:bar.org" ];
+        set [ 0 ] [ "!r0:bar.org" ];
         end;
     };
 
-    // Now we have:
-    //
-    // | index | room ID | recency | name |
-    // |-------|---------|---------|------|
-    // | 0     | !r0     | 7       | Bbb  |
-    // | 1     | !r1     | 6       | Aaa  |
-    // | 2     | !r4     | 5       |      |
-    // | 3     | !r3     | 4       |      |
-    // | 4     | !r2     | 1       |      |
-
+    // `!r2` is moving.
     assert_entries_batch! {
         [stream]
         remove [ 4 ];
@@ -2075,7 +2055,14 @@ async fn test_room_sorting() -> Result<(), Error> {
         end;
     };
 
-    // Read receipt update for r2.
+    // `!r1` receives a read receipt update.
+    assert_entries_batch! {
+        [stream]
+        set [ 2 ] [ "!r1:bar.org" ];
+        end;
+    };
+
+    // `!r2` receives a read receipt update.
     assert_entries_batch! {
         [stream]
         set [ 0 ] [ "!r2:bar.org" ];
@@ -2144,6 +2131,7 @@ async fn test_room_sorting() -> Result<(), Error> {
         },
     };
 
+    // `!r6` is being inserted.
     assert_entries_batch! {
         [stream]
         insert [ 1 ] [ "!r6:bar.org" ];
@@ -2161,18 +2149,21 @@ async fn test_room_sorting() -> Result<(), Error> {
     // | 4     | !r4     | 5       |      |
     // | 5     | !r3     | 4       |      |
 
-    // Rooms are individually updated.
-    assert_entries_batch! {
-        [stream]
-        set [ 1 ] [ "!r6:bar.org" ];
-        end;
-    };
+    // `!r6` receives an unknown reason update.
     assert_entries_batch! {
         [stream]
         set [ 1 ] [ "!r6:bar.org" ];
         end;
     };
 
+    // `!r6` receives a latest event update.
+    assert_entries_batch! {
+        [stream]
+        set [ 1 ] [ "!r6:bar.org" ];
+        end;
+    };
+
+    // `!r3` is moving.
     assert_entries_batch! {
         [stream]
         remove [ 5 ];
@@ -2191,17 +2182,21 @@ async fn test_room_sorting() -> Result<(), Error> {
     // | 4     | !r1     | 6       | Aaa  |
     // | 5     | !r4     | 5       |      |
 
-    // Rooms are individually updated.
-    assert_entries_batch! {
-        [stream]
-        set [ 0 ] [ "!r3:bar.org" ];
-        end;
-    };
+    // `!r6` receives a new name.
     assert_entries_batch! {
         [stream]
         set [ 2 ] [ "!r6:bar.org" ];
         end;
     };
+
+    // `!r3` receives a read receipt update.
+    assert_entries_batch! {
+        [stream]
+        set [ 0 ] [ "!r3:bar.org" ];
+        end;
+    };
+
+    // `!r6` receives a read receipt update.
     assert_entries_batch! {
         [stream]
         set [ 2 ] [ "!r6:bar.org" ];
@@ -2372,7 +2367,7 @@ async fn test_room_subscription() -> Result<(), Error> {
     };
 
     // Subscribe.
-    room_list.subscribe_to_rooms(&[room_id_1]).await;
+    room_list.set_room_subscriptions(&[room_id_1]).await;
 
     sync_then_assert_request_and_fake_response! {
         [server, room_list, sync]
@@ -2403,6 +2398,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                         ["m.room.pinned_events", ""],
                     ],
                     "timeline_limit": 20,
@@ -2417,7 +2413,7 @@ async fn test_room_subscription() -> Result<(), Error> {
     };
 
     // Subscribe to another room.
-    room_list.subscribe_to_rooms(&[room_id_2]).await;
+    room_list.set_room_subscriptions(&[room_id_2]).await;
 
     sync_then_assert_request_and_fake_response! {
         [server, room_list, sync]
@@ -2446,6 +2442,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                     ],
                     "filters": {},
                     "timeline_limit": 1,
@@ -2471,6 +2468,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                         ["m.room.pinned_events", ""],
                     ],
                     "timeline_limit": 20,
@@ -2480,6 +2478,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                 "account_data": { "enabled": true },
                 "receipts": { "enabled": true, "rooms": [ "*" ] },
                 "typing": { "enabled": true },
+                "org.matrix.msc4262.profiles": { "enabled": true },
             },
         },
         respond with = {
@@ -2490,7 +2489,7 @@ async fn test_room_subscription() -> Result<(), Error> {
     };
 
     // Subscribe to an already subscribed room, plus a previously removed one.
-    room_list.subscribe_to_rooms(&[room_id_1, room_id_2]).await;
+    room_list.set_room_subscriptions(&[room_id_1, room_id_2]).await;
 
     sync_then_assert_request_and_fake_response! {
         [server, room_list, sync]
@@ -2519,6 +2518,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                     ],
                     "filters": {},
                     "timeline_limit": 1,
@@ -2544,6 +2544,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                         ["m.room.pinned_events", ""],
                     ],
                     "timeline_limit": 20,
@@ -2567,6 +2568,7 @@ async fn test_room_subscription() -> Result<(), Error> {
                         ["m.space.parent", "*"],
                         ["m.space.child", "*"],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                         ["m.room.pinned_events", ""],
                     ],
                     "timeline_limit": 20,
@@ -2576,6 +2578,250 @@ async fn test_room_subscription() -> Result<(), Error> {
                 "account_data": { "enabled": true },
                 "receipts": { "enabled": true, "rooms": [ "*" ] },
                 "typing": { "enabled": true },
+                "org.matrix.msc4262.profiles": { "enabled": true },
+            },
+        },
+        respond with = {
+            "pos": "3",
+            "lists": {},
+            "rooms": {},
+        },
+    };
+
+    Ok(())
+}
+
+#[async_test]
+async fn test_remove_and_reset_room_subscriptions() -> Result<(), Error> {
+    let (_, server, room_list) = new_room_list_service().await?;
+
+    let sync = room_list.sync();
+    pin_mut!(sync);
+
+    let room_id_0 = room_id!("!r0:bar.org");
+    let room_id_1 = room_id!("!r1:bar.org");
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        assert request >= {
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 19]],
+                    "timeline_limit": 1,
+                },
+            },
+        },
+        respond with = {
+            "pos": "0",
+            "lists": {
+                ALL_ROOMS: {
+                    "count": 2,
+                },
+            },
+            "rooms": {
+                room_id_0: {
+                    "initial": true,
+                },
+                room_id_1: {
+                    "initial": true,
+                },
+            },
+        },
+    };
+
+    room_list.set_room_subscriptions(&[room_id_0, room_id_1]).await;
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        assert request >= {
+            "room_subscriptions": {
+                room_id_0: {
+                    "timeline_limit": 20,
+                },
+                room_id_1: {
+                    "timeline_limit": 20,
+                },
+            },
+        },
+        respond with = {
+            "pos": "1",
+            "lists": {},
+            "rooms": {},
+        },
+    };
+
+    room_list.remove_room_subscriptions(&[room_id_0]);
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        // strict comparison to ensure the exact shape of `room_subscriptions`.
+        assert request = {
+            "conn_id": "room-list",
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 1]],
+                    "required_state": [
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
+                    ],
+                    "filters": {},
+                    "timeline_limit": 1,
+                },
+            },
+            "room_subscriptions": {
+                room_id_1: {
+                    "required_state": [
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
+                        ["m.room.pinned_events", ""],
+                    ],
+                    "timeline_limit": 20,
+                },
+            },
+            "extensions": {
+                "account_data": { "enabled": true },
+                "receipts": { "enabled": true, "rooms": [ "*" ] },
+                "typing": { "enabled": true },
+                "org.matrix.msc4262.profiles": { "enabled": true },
+            },
+        },
+        respond with = {
+            "pos": "2",
+            "lists": {},
+            "rooms": {},
+        },
+    };
+
+    server.mock_get_members().ok(vec![]).mount().await;
+
+    let room_1 = room_list.room(room_id_1)?;
+    room_1.sync_members().await.unwrap();
+    assert!(room_1.are_members_synced());
+
+    room_list.reset_and_add_room_subscriptions(&[room_id_0, room_id_1]).await;
+
+    // `set_room_subscriptions` would have kept the members of `room_id_1` synced.
+    assert!(!room_1.are_members_synced());
+
+    sync_then_assert_request_and_fake_response! {
+        [server, room_list, sync]
+        // strict comparison to ensure the exact shape of `room_subscriptions`.
+        assert request = {
+            "conn_id": "room-list",
+            "lists": {
+                ALL_ROOMS: {
+                    "ranges": [[0, 1]],
+                    "required_state": [
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
+                    ],
+                    "filters": {},
+                    "timeline_limit": 1,
+                },
+            },
+            "room_subscriptions": {
+                room_id_0: {
+                    "required_state": [
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
+                        ["m.room.pinned_events", ""],
+                    ],
+                    "timeline_limit": 20,
+                },
+                room_id_1: {
+                    "required_state": [
+                        ["m.room.name", ""],
+                        ["m.room.encryption", ""],
+                        ["m.room.member", "$LAZY"],
+                        ["m.room.member", "$ME"],
+                        ["m.room.topic", ""],
+                        ["m.room.avatar", ""],
+                        ["m.room.canonical_alias", ""],
+                        ["m.room.power_levels", ""],
+                        ["org.matrix.msc3401.call.member", "*"],
+                        ["m.room.join_rules", ""],
+                        ["m.room.tombstone", ""],
+                        ["m.room.create", ""],
+                        ["m.room.history_visibility", ""],
+                        ["io.element.functional_members", ""],
+                        ["m.space.parent", "*"],
+                        ["m.space.child", "*"],
+                        ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
+                        ["m.room.pinned_events", ""],
+                    ],
+                    "timeline_limit": 20,
+                },
+            },
+            "extensions": {
+                "account_data": { "enabled": true },
+                "receipts": { "enabled": true, "rooms": [ "*" ] },
+                "typing": { "enabled": true },
+                "org.matrix.msc4262.profiles": { "enabled": true },
             },
         },
         respond with = {
@@ -2789,7 +3035,7 @@ async fn test_room_latest_event() -> Result<(), Error> {
     let room = room_list.room(room_id)?;
     let timeline = room.timeline_builder().build().await.unwrap();
 
-    // We could subscribe to the room —with `RoomList::subscribe_to_rooms`— to
+    // We could subscribe to the room —with `RoomList::set_room_subscriptions`— to
     // automatically listen to the latest event updates, but we will do it
     // manually here (so that we can ignore the subscription thingies).
     let latest_events = client.latest_events().await;
@@ -3129,6 +3375,9 @@ async fn test_thread_subscriptions_extension_enabled_only_if_server_advertises_i
                     "typing": {
                         "enabled": true,
                     },
+                    "org.matrix.msc4262.profiles": {
+                        "enabled": true,
+                    },
                 },
                 "lists": {
                     "all_rooms": {
@@ -3152,6 +3401,7 @@ async fn test_thread_subscriptions_extension_enabled_only_if_server_advertises_i
                             [ "m.space.parent", "*", ],
                             [ "m.space.child", "*", ],
                             ["org.matrix.msc3672.beacon_info", "*"],
+                            ["org.matrix.msc1763.retention", ""],
                         ],
                         "timeline_limit": 1,
                     },
@@ -3227,6 +3477,9 @@ async fn test_thread_subscriptions_extension_enabled_only_if_server_advertises_i
                     "enabled": true,
                     "limit": 10,
                 },
+                "org.matrix.msc4262.profiles": {
+                    "enabled": true,
+                },
             },
             "lists": {
                 "all_rooms": {
@@ -3250,6 +3503,7 @@ async fn test_thread_subscriptions_extension_enabled_only_if_server_advertises_i
                         [ "m.space.parent", "*", ],
                         [ "m.space.child", "*", ],
                         ["org.matrix.msc3672.beacon_info", "*"],
+                        ["org.matrix.msc1763.retention", ""],
                     ],
                     "timeline_limit": 1,
                 },

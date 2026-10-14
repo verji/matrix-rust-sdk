@@ -123,7 +123,7 @@ impl EmbeddedEvent {
         let sender = event.sender().to_owned();
         let timestamp = event.origin_server_ts();
         let identifier = TimelineEventItemId::EventId(event.event_id().to_owned());
-        let action = TimelineAction::from_event(
+        let actions = TimelineAction::from_event(
             event,
             &raw_event,
             room_data_provider,
@@ -133,33 +133,30 @@ impl EmbeddedEvent {
             thread_summary,
         )
         .await;
-
-        match action {
-            Some(TimelineAction::AddItem { content }) => {
+        match actions.as_slice() {
+            [TimelineAction::AddItem { content }] => {
+                let content = content.clone();
                 let sender_profile = TimelineDetails::from_initial_value(
                     room_data_provider.profile_from_user_id(&sender).await,
                 );
                 Ok(Some(Self { content, sender, sender_profile, timestamp, identifier }))
             }
-
-            Some(TimelineAction::HandleAggregation { kind, .. }) => {
+            [TimelineAction::HandleAggregation { kind, .. }] => {
                 // As an exception, edits are allowed to be embedded events.
 
                 // For an embedded event, we don't need to fill a few fields; it's in an
                 // embedded view context, so there's no strong need to show all detailed
                 // information about it.
-                let reactions = Default::default();
                 let thread_root = None;
                 let in_reply_to = None;
                 let thread_summary = None;
 
                 let content = match kind {
                     HandleAggregationKind::Edit { replacement } => {
-                        let msg = replacement.new_content;
+                        let msg = &replacement.new_content;
                         Some(TimelineItemContent::message(
-                            msg.msgtype,
-                            msg.mentions,
-                            reactions,
+                            msg.msgtype.clone(),
+                            msg.mentions.clone(),
                             thread_root,
                             in_reply_to,
                             thread_summary,
@@ -167,11 +164,10 @@ impl EmbeddedEvent {
                     }
 
                     HandleAggregationKind::PollEdit { replacement } => {
-                        let msg = replacement.new_content;
-                        let poll_state = PollState::new(msg.poll_start, msg.text);
+                        let msg = &replacement.new_content;
+                        let poll_state = PollState::new(msg.poll_start.clone(), msg.text.clone());
                         Some(TimelineItemContent::MsgLike(MsgLikeContent {
                             kind: MsgLikeKind::Poll(poll_state),
-                            reactions: Default::default(),
                             thread_root,
                             in_reply_to,
                             thread_summary,
@@ -194,9 +190,15 @@ impl EmbeddedEvent {
                     Ok(None)
                 }
             }
-
-            None => {
-                warn!("embedded event lead to no action (neither an aggregation nor a new item)");
+            [] => {
+                warn!("No action for an embedded event");
+                Ok(None)
+            }
+            [_, _, ..] => {
+                // Multiple actions can happen e.g. when a beacon_info with prev_content
+                // is replied to: it produces both an AddItem and a HandleAggregation.
+                // There is no meaningful single content to extract in that case.
+                warn!("Ignoring embedded event that produced multiple timeline actions");
                 Ok(None)
             }
         }

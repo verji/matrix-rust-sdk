@@ -38,19 +38,19 @@ unknown-registry = "deny"
 unknown-git = "deny"
 
 allow-git = [
-    # A patch override for the bindings fixing a bug for Android before upstream
-    # releases a new version.
-    "https://github.com/tokio-rs/tracing.git",
-    # Well, it's Ruma.
-    "https://github.com/ruma/ruma",
     # A patch override for the bindings: https://github.com/rodrimati1992/const_panic/pull/10
     "https://github.com/jplatte/const_panic",
     # A patch override for the bindings: https://github.com/smol-rs/async-compat/pull/22
     "https://github.com/element-hq/async-compat",
-    # We can release vodozemac whenever we need but let's not block development
-    # on releases.
-    "https://github.com/matrix-org/vodozemac",
+    # Patch override for the bindings. Pinned one commit past 3.1.1 for the
+    # unreleased guess-magnitude overflow fix, needed by the bindings' password
+    # strength estimation.
+    "https://github.com/shssoichiro/zxcvbn-rs",
     # FLOE streaming file encryption; git-pinned until floe-rs publishes to
     # crates.io. Used by matrix-sdk-crypto's file_encryption/floe.
     "https://github.com/poljar/floe.git",
+    # The fork of it that is pinned: its async streaming surface is not upstream yet.
+    "https://github.com/verji/floe-rs.git",
+    # ruma with the MSC4016 FLOE type (unstable-msc4016), until that is upstream.
+    "https://github.com/verji/ruma",
 ]

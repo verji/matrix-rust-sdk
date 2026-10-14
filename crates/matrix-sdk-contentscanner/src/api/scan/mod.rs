@@ -14,7 +14,7 @@
 
 use matrix_sdk::RumaApiError;
 use ruma::{
-    api::{EndpointError, IncomingResponse, error::FromHttpResponseError},
+    api::{IncomingResponse, error::DeserializationError},
     exports::{http::Response, serde_json},
 };
 use serde::Deserialize;
@@ -24,6 +24,7 @@ pub mod unencrypted;
 
 /// A media scan response containing the result of the scan.
 /// Spec: <https://github.com/element-hq/matrix-content-scanner-python/blob/main/docs/api.md#get-_matrixmedia_proxyunstablescanservernamemediaid>
+#[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Debug, Deserialize)]
 pub struct MediaScanResponse {
     /// Whether the media is clean or contained something dangerous.
@@ -35,15 +36,9 @@ pub struct MediaScanResponse {
 impl IncomingResponse for MediaScanResponse {
     type EndpointError = RumaApiError;
 
-    fn try_from_http_response<T: AsRef<[u8]>>(
-        response: Response<T>,
-    ) -> Result<Self, FromHttpResponseError<Self::EndpointError>> {
-        if response.status().is_success() {
-            let content = response.body().as_ref().to_vec();
-            let media_scan_response: MediaScanResponse = serde_json::from_slice(&content)?;
-            Ok(media_scan_response)
-        } else {
-            Err(FromHttpResponseError::Server(Self::EndpointError::from_http_response(response)))
-        }
+    fn try_from_http_response_inner(
+        response: Response<&[u8]>,
+    ) -> Result<Self, DeserializationError> {
+        Ok(serde_json::from_slice(response.body())?)
     }
 }

@@ -15,7 +15,10 @@
 use std::sync::Arc;
 
 use as_variant::as_variant;
-use matrix_sdk::{Room, deserialized_responses::TimelineEvent};
+use matrix_sdk::{
+    Room,
+    deserialized_responses::{TimelineEvent, TimelineEventKind},
+};
 use matrix_sdk_base::crypto::types::events::UtdCause;
 use ruma::{
     OwnedDeviceId, OwnedEventId, OwnedMxcUri, OwnedUserId, UserId,
@@ -26,7 +29,7 @@ use ruma::{
             room::PolicyRuleRoomEventContent, server::PolicyRuleServerEventContent,
             user::PolicyRuleUserEventContent,
         },
-        relation::Replacement,
+        relation::{Replacement, Reply, Thread},
         room::{
             avatar::RoomAvatarEventContent,
             canonical_alias::RoomCanonicalAliasEventContent,
@@ -37,7 +40,10 @@ use ruma::{
             history_visibility::RoomHistoryVisibilityEventContent,
             join_rules::RoomJoinRulesEventContent,
             member::{Change, RoomMemberEventContent},
-            message::{MessageType, RoomMessageEventContent},
+            message::{
+                MessageType, Relation, RoomMessageEventContent,
+                RoomMessageEventContentWithoutRelation,
+            },
             name::RoomNameEventContent,
             pinned_events::RoomPinnedEventsEventContent,
             power_levels::RoomPowerLevelsEventContent,
@@ -53,6 +59,7 @@ use ruma::{
     html::RemoveReplyFallback,
     room_version_rules::RedactionRules,
 };
+use tracing::warn;
 
 mod live_location;
 mod message;
@@ -78,8 +85,10 @@ pub use self::{
     polls::{PollResult, PollState},
     reply::{EmbeddedEvent, InReplyToDetails},
 };
-use super::ReactionsByKeyBySender;
-use crate::timeline::event_handler::{HandleAggregationKind, TimelineAction};
+use crate::timeline::{
+    controller::ActiveCallInfo,
+    event_handler::{HandleAggregationKind, TimelineAction},
+};
 
 /// The content of an [`EventTimelineItem`][super::EventTimelineItem].
 #[allow(clippy::large_enum_variant)]
@@ -126,6 +135,9 @@ pub enum TimelineItemContent {
         call_intent: Option<CallIntent>,
         /// Users who have declined this call notification
         declined_by: Vec<OwnedUserId>,
+        /// Information about the active call, if this notification is about an
+        /// active call.
+        active_call_info: Option<ActiveCallInfo>,
     },
 }
 
@@ -157,44 +169,67 @@ impl TimelineItemContent {
 
     /// Create a raw [`TimelineItemContent`] for a given [`TimelineEvent`],
     /// without providing extra information (about thread root, replied-to
-    /// information, UTD info, and so on).
+    /// information, and so on).
     pub async fn from_event(room: &Room, timeline_event: TimelineEvent) -> Option<Self> {
-        let raw_event = timeline_event.into_raw();
+        let (utd_info, raw_event) = match timeline_event.kind {
+            TimelineEventKind::UnableToDecrypt { utd_info, event } => (Some(utd_info), event),
+            _ => (None, timeline_event.into_raw()),
+        };
+
         let deserialized_event = raw_event.deserialize().ok()?;
 
-        match TimelineAction::from_event(
+        let actions = TimelineAction::from_event(
             deserialized_event,
             &raw_event,
             room,
-            None,
+            utd_info.map(|utd_info| (utd_info, None)),
             None,
             None,
             None,
         )
-        .await
-        {
-            Some(TimelineAction::AddItem { content }) => Some(content),
-
+        .await;
+        match actions.as_slice() {
+            [TimelineAction::AddItem { content }] => Some(content.clone()),
+            [
+                TimelineAction::AddItem { content },
+                TimelineAction::HandleAggregation {
+                    kind: HandleAggregationKind::BeaconStop { .. },
+                    ..
+                },
+            ] => {
+                if content.is_live_location_state() {
+                    Some(content.clone())
+                } else {
+                    warn!(
+                        "Unexpected [AddItem, BeaconStop] actions with a non-live-location \
+                         AddItem; ignoring event"
+                    );
+                    None
+                }
+            }
             // Aggregated event: only edits and beacon stop are supported at the moment.
-            Some(TimelineAction::HandleAggregation {
-                kind: HandleAggregationKind::BeaconStop { content },
-                ..
-            }) => Some(TimelineItemContent::MsgLike(MsgLikeContent {
-                kind: MsgLikeKind::LiveLocation(LiveLocationState::new(content)),
-                reactions: Default::default(),
+            [
+                TimelineAction::HandleAggregation {
+                    kind: HandleAggregationKind::BeaconStop { content, .. },
+                    ..
+                },
+            ] => Some(TimelineItemContent::MsgLike(MsgLikeContent {
+                kind: MsgLikeKind::LiveLocation(LiveLocationState::new(content.clone())),
                 thread_root: None,
                 in_reply_to: None,
                 thread_summary: None,
             })),
-
-            Some(TimelineAction::HandleAggregation {
-                kind: HandleAggregationKind::Edit { replacement: Replacement { new_content, .. } },
-                ..
-            }) => {
+            [
+                TimelineAction::HandleAggregation {
+                    kind:
+                        HandleAggregationKind::Edit { replacement: Replacement { new_content, .. } },
+                    ..
+                },
+            ] => {
                 // Map the edit to a regular message.
                 match TimelineAction::from_content(
                     AnyMessageLikeEventContent::RoomMessage(RoomMessageEventContent::new(
-                        new_content.msgtype,
+                        new_content.msgtype.clone(),
                     )),
                     None,
                     None,
@@ -204,7 +239,15 @@ impl TimelineItemContent {
                     _ => None,
                 }
             }
-
+            [] => {
+                warn!("No action for event content processing");
+                None
+            }
+            [_, _, ..] => {
+                // There is no meaningful single content to extract in that case.
+                warn!("Ignoring event that produced multiple timeline actions");
+                None
+            }
             _ => None,
         }
     }
@@ -221,6 +264,12 @@ impl TimelineItemContent {
             kind: MsgLikeKind::LiveLocation(state),
             ..
         }) => state)
+    }
+
+    /// Check whether this item's content is a
+    /// [`LiveLocation`][MsgLikeKind::LiveLocation].
+    pub fn is_live_location_state(&self) -> bool {
+        matches!(self, Self::MsgLike(MsgLikeContent { kind: MsgLikeKind::LiveLocation(_), .. }))
     }
 
     /// If `self` is of the [`MsgLike`][Self::MsgLike] variant, return the
@@ -296,7 +345,6 @@ impl TimelineItemContent {
     pub(crate) fn message(
         msgtype: MessageType,
         mentions: Option<Mentions>,
-        reactions: ReactionsByKeyBySender,
         thread_root: Option<OwnedEventId>,
         in_reply_to: Option<InReplyToDetails>,
         thread_summary: Option<ThreadSummary>,
@@ -311,7 +359,6 @@ impl TimelineItemContent {
                 None,
                 remove_reply_fallback,
             )),
-            reactions,
             thread_root,
             in_reply_to,
             thread_summary,
@@ -399,7 +446,12 @@ impl TimelineItemContent {
 
     pub(in crate::timeline) fn redact(&self, rules: &RedactionRules) -> Self {
         match self {
-            Self::MsgLike(_) | Self::CallInvite | Self::RtcNotification { .. } => {
+            Self::MsgLike(msglike) => TimelineItemContent::MsgLike(MsgLikeContent {
+                kind: MsgLikeKind::Redacted,
+                in_reply_to: None,
+                ..msglike.clone()
+            }),
+            Self::CallInvite | Self::RtcNotification { .. } => {
                 TimelineItemContent::MsgLike(MsgLikeContent::redacted())
             }
             Self::MembershipChange(ev) => Self::MembershipChange(ev.redact(rules)),
@@ -419,56 +471,23 @@ impl TimelineItemContent {
         as_variant!(self, Self::MsgLike)?.in_reply_to.clone()
     }
 
-    /// Return the reactions, grouped by key and then by sender, for a given
-    /// content.
-    pub fn reactions(&self) -> Option<&ReactionsByKeyBySender> {
-        match self {
-            TimelineItemContent::MsgLike(msglike) => Some(&msglike.reactions),
-
-            TimelineItemContent::MembershipChange(..)
-            | TimelineItemContent::ProfileChange(..)
-            | TimelineItemContent::OtherState(..)
-            | TimelineItemContent::FailedToParseMessageLike { .. }
-            | TimelineItemContent::FailedToParseState { .. }
-            | TimelineItemContent::CallInvite
-            | TimelineItemContent::RtcNotification { .. } => {
-                // No reactions for these kind of items.
-                None
-            }
+    /// The thread or reply relation of this item, rebuilt from its thread root
+    /// and reply target, if any.
+    pub(crate) fn relation(&self) -> Option<Relation<RoomMessageEventContentWithoutRelation>> {
+        if let Some(thread_root) = self.thread_root() {
+            Some(Relation::Thread(match self.in_reply_to() {
+                Some(details) => Thread::reply(thread_root, details.event_id),
+                None => Thread::plain(thread_root.clone(), thread_root),
+            }))
+        } else {
+            self.in_reply_to()
+                .map(|details| Relation::Reply(Reply::with_event_id(details.event_id)))
         }
     }
 
     /// Information about the thread this item is the root for.
     pub fn thread_summary(&self) -> Option<ThreadSummary> {
         as_variant!(self, Self::MsgLike)?.thread_summary.clone()
-    }
-
-    /// Return a mutable handle to the reactions of this item.
-    ///
-    /// See also [`Self::reactions()`] to explain the optional return type.
-    pub(crate) fn reactions_mut(&mut self) -> Option<&mut ReactionsByKeyBySender> {
-        match self {
-            TimelineItemContent::MsgLike(msglike) => Some(&mut msglike.reactions),
-
-            TimelineItemContent::MembershipChange(..)
-            | TimelineItemContent::ProfileChange(..)
-            | TimelineItemContent::OtherState(..)
-            | TimelineItemContent::FailedToParseMessageLike { .. }
-            | TimelineItemContent::FailedToParseState { .. }
-            | TimelineItemContent::CallInvite
-            | TimelineItemContent::RtcNotification { .. } => {
-                // No reactions for these kind of items.
-                None
-            }
-        }
-    }
-
-    pub fn with_reactions(&self, reactions: ReactionsByKeyBySender) -> Self {
-        let mut cloned = self.clone();
-        if let Some(r) = cloned.reactions_mut() {
-            *r = reactions;
-        }
-        cloned
     }
 }
 

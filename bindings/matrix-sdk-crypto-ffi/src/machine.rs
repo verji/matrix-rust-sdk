@@ -25,7 +25,7 @@ use ruma::{
     DeviceKeyAlgorithm, EventId, OneTimeKeyAlgorithm, OwnedTransactionId, OwnedUserId, RoomId,
     UserId,
     api::{
-        IncomingResponse,
+        IncomingResponseExt as _,
         client::{
             backup::add_backup_keys::v3::Response as KeysBackupResponse,
             keys::{
@@ -59,8 +59,8 @@ use crate::{
     Sas, SignatureUploadRequest, StartSasResult, UserIdentity, Verification, VerificationRequest,
     dehydrated_devices::DehydratedDevices,
     error::{
-        CryptoStoreError, DecryptionError, SecretImportError, SecretsBundleExportError,
-        SignatureError,
+        BootstrapCrossSigningError, CryptoStoreError, DecryptionError, SecretImportError,
+        SecretsBundleExportError, SignatureError,
     },
     parse_user_id,
     responses::{OwnedResponse, response_from_string},
@@ -1376,7 +1376,9 @@ impl OlmMachine {
 
     /// Create a new private cross signing identity and create a request to
     /// upload the public part of it to the server.
-    pub fn bootstrap_cross_signing(&self) -> Result<BootstrapCrossSigningResult, CryptoStoreError> {
+    pub fn bootstrap_cross_signing(
+        &self,
+    ) -> Result<BootstrapCrossSigningResult, BootstrapCrossSigningError> {
         Ok(self.runtime.block_on(self.inner.bootstrap_cross_signing(true))?.into())
     }
 

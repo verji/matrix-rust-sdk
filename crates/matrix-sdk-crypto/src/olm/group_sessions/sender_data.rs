@@ -551,7 +551,7 @@ mod tests {
 
         let end: SenderData = serde_json::from_str(json).expect("Failed to parse!");
         assert_let!(SenderData::VerificationViolation(KnownSenderData { user_id, .. }) = end);
-        assert_eq!(user_id, owned_user_id!("@u:s.co"));
+        assert_eq!(user_id, "@u:s.co");
     }
 
     #[test]
@@ -571,7 +571,7 @@ mod tests {
 
         let end: SenderData = serde_json::from_str(json).expect("Failed to parse!");
         assert_let!(SenderData::VerificationViolation(KnownSenderData { user_id, .. }) = end);
-        assert_eq!(user_id, owned_user_id!("@u:s.co"));
+        assert_eq!(user_id, "@u:s.co");
     }
 
     #[test]
@@ -796,7 +796,13 @@ mod tests {
     async fn test_from_device_for_verified_user() {
         let alice_account =
             Account::with_device_id(user_id!("@alice:example.com"), device_id!("ALICE_DEVICE"));
-        let alice_identity = PrivateCrossSigningIdentity::for_account(&alice_account);
+        let alice_identity = PrivateCrossSigningIdentity::for_account(
+            &alice_account,
+            #[cfg(feature = "experimental-x509-identity-verification")]
+            None,
+        )
+        .await
+        .unwrap();
 
         let bob_identity = PrivateCrossSigningIdentity::new(owned_user_id!("@bob:example.com"));
         let bob_account =

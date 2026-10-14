@@ -282,7 +282,7 @@ impl CryptoStore for MemoryStore {
         {
             let mut olm_hashes = self.olm_hashes.write();
             for hash in changes.message_hashes {
-                olm_hashes.entry(hash.sender_key.to_owned()).or_default().insert(hash.hash.clone());
+                olm_hashes.entry(hash.sender_key.to_owned()).or_default().insert(hash.hash);
             }
         }
 
@@ -293,6 +293,12 @@ impl CryptoStore for MemoryStore {
             for key_request in changes.key_requests {
                 let id = key_request.request_id.clone();
                 let info_string = encode_key_info(&key_request.info);
+
+                // If we have an old request for the same key/secret, remove it.
+                if let Some(old_id) = key_requests_by_info.get(&info_string) {
+                    outgoing_key_requests.remove(old_id);
+                    key_requests_by_info.remove(&info_string);
+                }
 
                 outgoing_key_requests.insert(id.clone(), key_request);
                 key_requests_by_info.insert(info_string, id);
@@ -1129,7 +1135,7 @@ mod tests {
         let loaded_identity =
             store.load_identity().await.expect("failed to load private identity").unwrap();
 
-        assert_eq!(loaded_identity.user_id(), user_id!("@u:s"));
+        assert_eq!(loaded_identity.user_id(), "@u:s");
     }
 
     #[async_test]

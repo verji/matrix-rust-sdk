@@ -13,7 +13,7 @@
 // limitations under the License.
 
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt::Debug,
     io::Cursor,
     path::PathBuf,
@@ -29,13 +29,17 @@ use matrix_sdk::STATE_STORE_DATABASE_NAME;
 use matrix_sdk::media::MediaFileHandle as SdkMediaFileHandle;
 use matrix_sdk::{
     Account, AuthApi, AuthSession, Client as MatrixClient, Error, SessionChange, SessionTokens,
+    ToDeviceMessage as SdkToDeviceMessage,
     authentication::oauth::{
         ClientId, OAuthAuthorizationData, OAuthError as SdkOAuthError, OAuthSession,
     },
     deserialized_responses::{EncryptionInfo, RawAnySyncOrStrippedTimelineEvent},
     event_handler::EventHandlerHandle,
     executor::AbortOnDrop,
-    media::{MediaFormat, MediaRequestParameters, MediaRetentionPolicy, MediaThumbnailSettings},
+    media::{
+        DefaultMediaFetcher, MediaFormat, MediaRequestParameters, MediaRetentionPolicy,
+        MediaThumbnailSettings,
+    },
     ruma::{
         EventEncryptionAlgorithm, RoomId, TransactionId, UInt, UserId,
         api::client::{
@@ -43,7 +47,6 @@ use matrix_sdk::{
             discovery::get_authorization_server_metadata::v1::Prompt as RumaOAuthPrompt,
             push::{EmailPusherData, PusherIds, PusherInit, PusherKind as RumaPusherKind},
             room::{Visibility, create_room},
-            rtc::RtcTransport,
             session::get_login_types,
             user_directory::search_users,
         },
@@ -62,6 +65,8 @@ use matrix_sdk::{
     task_monitor::BackgroundTaskFailureReason,
 };
 use matrix_sdk_base::crypto::CollectStrategy;
+#[cfg(feature = "experimental-x509-identity-verification")]
+use matrix_sdk_base::crypto::x509::RawX509Signature;
 use matrix_sdk_common::{
     SendOutsideWasm, SyncOutsideWasm, cross_process_lock::CrossProcessLockConfig, stream::StreamExt,
 };
@@ -76,15 +81,17 @@ use matrix_sdk_ui::{
 use mime::Mime;
 use oauth2::Scope;
 use ruma::{
-    OwnedDeviceId, OwnedMxcUri, OwnedServerName, RoomAliasId, RoomOrAliasId, ServerName,
+    MilliSecondsSinceUnixEpoch, OwnedDeviceId, OwnedMxcUri, OwnedServerName, RoomAliasId,
+    RoomOrAliasId, ServerName,
     api::{
         client::{
             alias::get_alias,
             discovery::get_authorization_server_metadata::v1::{
                 AccountManagementActionData, DeviceDeleteData, DeviceViewData,
             },
-            profile::{AvatarUrl, DisplayName},
+            profile::{AvatarUrl, Call, DisplayName, ProfileFieldName, StaticProfileField, Status},
             room::create_room::{RoomPowerLevelsContentOverride, v3::CreationContent},
+            rtc::RtcTransport,
             uiaa::{EmailUserIdentifier, UserIdentifier},
         },
         error::ErrorKind,
@@ -92,7 +99,8 @@ use ruma::{
     events::{
         AnyMessageLikeEventContent, AnySyncTimelineEvent, AnyToDeviceEvent,
         AnyToDeviceEventContent, GlobalAccountDataEvent as RumaGlobalAccountDataEvent,
-        RoomAccountDataEvent as RumaRoomAccountDataEvent,
+        RoomAccountDataEvent as RumaRoomAccountDataEvent, RoomAccountDataEventType,
+        ToDeviceEventType,
         direct::DirectEventContent,
         fully_read::FullyReadEventContent,
         identity_server::IdentityServerEventContent,
@@ -115,10 +123,11 @@ use ruma::{
     },
     push::{HttpPusherData as RumaHttpPusherData, PushFormat as RumaPushFormat},
     room::RoomType,
+    to_device::DeviceIdOrAllDevices,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use tokio::sync::broadcast::error::RecvError;
+use serde_json::{Value, json, value::RawValue as RawJsonValue};
+use tokio::sync::{RwLock, broadcast::error::RecvError};
 use tracing::{debug, error, warn};
 use url::Url;
 
@@ -132,11 +141,12 @@ use crate::{
         HomeserverLoginDetails, OAuthConfiguration, OAuthError, SsoError, SsoHandler,
     },
     client,
-    encryption::Encryption,
+    content_scanner::ContentScanner,
+    encryption::{Encryption, EventEncryptionInfo},
     live_locations_observer::BeaconInfoUpdate,
     notification::{
-        NotificationClient, NotificationEvent, NotificationItem, NotificationRoomInfo,
-        NotificationSenderInfo,
+        NotificationClient, NotificationClientTimeouts, NotificationEvent, NotificationItem,
+        NotificationRoomInfo, NotificationSenderInfo,
     },
     notification_settings::NotificationSettings,
     qr_code::{GrantLoginWithQrCodeHandler, LoginWithQrCodeHandler},
@@ -145,7 +155,7 @@ use crate::{
     room_preview::RoomPreview,
     ruma::{
         AccountDataEvent, AccountDataEventType, AuthData, InviteAvatars, MediaPreviewConfig,
-        MediaPreviews, MediaSource, RoomAccountDataEvent, RoomAccountDataEventType,
+        MediaPreviews, MediaSource, PresenceState, RoomAccountDataEvent, UserCall, UserStatus,
     },
     runtime::get_runtime_handle,
     spaces::SpaceService,
@@ -281,6 +291,13 @@ pub trait BeaconInfoListener: SyncOutsideWasm + SendOutsideWasm {
     fn on_update(&self, update: BeaconInfoUpdate);
 }
 
+/// A listener for the current user's global profile.
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait ProfileListener: SyncOutsideWasm + SendOutsideWasm {
+    /// Called whenever the current user's global profile changes.
+    fn on_update(&self, profile: UserProfile);
+}
+
 /// Information about the old and new key that caused a duplicate key upload
 /// error in /keys/upload.
 #[derive(uniffi::Record)]
@@ -314,6 +331,35 @@ pub trait RoomAccountDataListener: SyncOutsideWasm + SendOutsideWasm {
 pub trait SyncNotificationListener: SyncOutsideWasm + SendOutsideWasm {
     /// Called when a notifying event is received during sync.
     fn on_notification(&self, notification: NotificationItem, room_id: String);
+}
+
+/// A foreign trait for low-level types which can sign messages using an
+/// X.509-certified key pair.
+#[cfg(feature = "experimental-x509-identity-verification")]
+#[matrix_sdk_ffi_macros::export(with_foreign)]
+pub trait RawX509Signer: SyncOutsideWasm + SendOutsideWasm + Debug {
+    /// Create a signature for the given message using our private key
+    ///
+    /// Note: the matrix-rust-sdk implementation supports asynchronous signing,
+    /// but (for now) in this FFI we only support synchronous.
+    fn sign(&self, message: Vec<u8>) -> Result<RawX509Signature, ClientError>;
+
+    /// Return the "not after" time for the certificate's validity period as a
+    /// number of milliseconds since the UNIX epoch.
+    fn validity_not_after(&self) -> Result<u64, ClientError>;
+}
+
+/// A foreign trait for low-level types which can verify messages which were
+/// signed using an X.509-certified key pair.
+#[cfg(feature = "experimental-x509-identity-verification")]
+#[matrix_sdk_ffi_macros::export(with_foreign)]
+pub trait RawX509Verifier: SyncOutsideWasm + SendOutsideWasm + Debug {
+    /// Check if the given signature is a valid X.509 signature for the given
+    /// message.
+    ///
+    /// Also validates that the certificate used for the signature is issued via
+    /// one of our trusted CAs.
+    fn verify(&self, message: Vec<u8>, sig: RawX509Signature) -> bool;
 }
 
 /// A listener for raw to-device events of arbitrary `type`, delivered after
@@ -394,6 +440,8 @@ pub struct Client {
     /// SQLite or IndexedDB).
     #[cfg_attr(not(feature = "sqlite"), allow(unused))]
     store_path: Option<PathBuf>,
+
+    content_scanner: RwLock<Option<Arc<ContentScanner>>>,
 }
 
 impl Client {
@@ -438,12 +486,13 @@ impl Client {
             utd_hook_manager: OnceLock::new(),
             session_verification_controller,
             store_path,
+            content_scanner: Default::default(),
         };
 
         match store_mode {
             CrossProcessLockConfig::MultiProcess { holder_name } => {
                 if session_delegate.is_none() {
-                    return Err(anyhow::anyhow!(
+                    Err(anyhow::anyhow!(
                         "missing session delegates with multi-process lock configuration"
                     ))?;
                 }
@@ -645,14 +694,16 @@ impl Client {
         }
 
         let homeserver = self.inner.homeserver();
-        // Append the endpoint's absolute path onto the full base — the way ruma assembles request
-        // URLs — so a homeserver base that carries a path prefix keeps it. `Url::join` with a
-        // relative reference would drop the last path segment.
+        // Append the endpoint's absolute path onto the full base — the way ruma
+        // assembles request URLs — so a homeserver base that carries a path
+        // prefix keeps it. `Url::join` with a relative reference would drop the
+        // last path segment.
         let url = format!("{}/_matrix/client/v3/login", homeserver.as_str().trim_end_matches('/'));
 
-        // The appservice token goes in the Authorization header — the login endpoint reads it there
-        // to authenticate the application service. matrix-sdk's own request path only ever attaches
-        // the *session* token, so the request is sent directly through the client's HTTP client.
+        // The appservice token goes in the Authorization header — the login endpoint
+        // reads it there to authenticate the application service. matrix-sdk's
+        // own request path only ever attaches the *session* token, so the
+        // request is sent directly through the client's HTTP client.
         let response = self
             .inner
             .http_client()
@@ -668,7 +719,7 @@ impl Client {
         if !status.is_success() {
             let text = String::from_utf8_lossy(&bytes);
             return Err(ClientError::from_str(
-                &format!("application service login failed ({status}): {text}"),
+                format!("application service login failed ({status}): {text}"),
                 None,
             ));
         }
@@ -1123,6 +1174,13 @@ impl Client {
             RoomAccountDataEventType::UnstableMarkedUnread => {
                 observe!(UnstableMarkedUnreadEventContent)
             }
+            _ => {
+                // TODO: Support the remaining types
+                Err(ClientError::Generic {
+                    msg: "Unsupported room account data type".to_owned(),
+                    details: None,
+                })
+            }
         }
     }
 
@@ -1173,6 +1231,18 @@ impl Client {
     /// reset it.
     pub async fn reset_supported_versions(&self) -> Result<(), ClientError> {
         Ok(self.inner.reset_supported_versions().await?)
+    }
+
+    /// Change whether this client is allowed to look up the homeserver's
+    /// `/.well-known/matrix/client` file.
+    ///
+    /// Some deployments must not emit any request to the well-known URI of
+    /// their domain. When disabled, [`Client::tile_server`] returns `None`,
+    /// [`Client::well_known_rtc_transports`] returns an empty list, and
+    /// [`Client::discover_rtc_transports`] doesn't fall back to the well-known
+    /// `m.rtc_foci`, relying only on the MSC4143 discovery endpoint.
+    pub fn disable_well_known_lookup(&self, disable: bool) {
+        self.inner.disable_well_known_lookup(disable);
     }
 
     /// Empty the well-known cache.
@@ -1265,6 +1335,20 @@ impl Client {
     /// potential sliding sync versions aside. No error will be reported.
     pub async fn available_sliding_sync_versions(&self) -> Vec<SlidingSyncVersion> {
         self.inner.available_sliding_sync_versions().await.into_iter().map(Into::into).collect()
+    }
+
+    /// Set the presence state for the current user.
+    ///
+    /// This updates the presence state used by future generated sync requests,
+    /// regardless of `immediate`. The initial default is `Unavailable`. If
+    /// `immediate` is `true`, it also sends an immediate presence update to the
+    /// homeserver.
+    pub async fn set_presence(
+        &self,
+        presence: PresenceState,
+        immediate: bool,
+    ) -> Result<(), ClientError> {
+        Ok(self.inner.set_presence(presence.into(), None, immediate).await?)
     }
 
     /// Sets the [ClientDelegate] which will inform about authentication errors.
@@ -1437,6 +1521,32 @@ impl Client {
         Ok(self.inner.account().get_cached_avatar_url().await?.map(Into::into))
     }
 
+    /// Subscribe to the current user's profile.
+    ///
+    /// Emits the current value immediately, if present, then again whenever the
+    /// user's profile changes during sync.
+    ///
+    /// **Note:** Without the Profiles sliding sync extension enabled only an
+    /// empty profile will be emitted and no updates will be published.
+    pub fn subscribe_to_own_profile(
+        &self,
+        listener: Box<dyn ProfileListener>,
+    ) -> Result<Arc<TaskHandle>, ClientError> {
+        let user_id = self.inner.user_id().context("No user ID found")?.to_owned();
+        let stream = self.inner.subscribe_to_own_profile()?;
+
+        Ok(Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            pin_mut!(stream);
+
+            while let Some(profile) = stream.next().await {
+                match UserProfile::from_profile(&user_id, &profile) {
+                    Ok(profile) => listener.on_update(profile),
+                    Err(error) => error!("Failed to convert global profile update: {error}"),
+                }
+            }
+        }))))
+    }
+
     pub fn device_id(&self) -> Result<String, ClientError> {
         let device_id = self.inner.device_id().context("No Device ID found")?;
         Ok(device_id.to_string())
@@ -1570,6 +1680,32 @@ impl Client {
             .await?)
     }
 
+    /// Get the homeserver-generated preview for a URL, as OpenGraph JSON.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The URL to generate a preview for.
+    ///
+    /// * `ts` - The preferred point in time to return a preview for, as a Unix
+    ///   timestamp in milliseconds. Deprecated since Matrix 1.11; pass `None`.
+    pub async fn get_url_preview(
+        &self,
+        url: String,
+        ts: Option<u64>,
+    ) -> Result<Option<String>, ClientError> {
+        // Saturating rather than unwrapping: this comes from a foreign-language
+        // caller and must not panic across the FFI boundary.
+        let ts = ts.map(|ts| MilliSecondsSinceUnixEpoch(UInt::new_saturating(ts)));
+
+        debug!("requesting URL preview");
+        Ok(self
+            .inner
+            .media()
+            .get_media_preview(&url, ts)
+            .await?
+            .map(|preview| preview.get().to_owned()))
+    }
+
     pub async fn get_session_verification_controller(
         &self,
     ) -> Result<Arc<SessionVerificationController>, ClientError> {
@@ -1652,7 +1788,7 @@ impl Client {
     /// server. However, if the `Client` has been built from a server URL or
     /// name, then the homeserver has been discovered, and we know both.
     pub fn server(&self) -> Option<String> {
-        self.inner.server().map(ToString::to_string)
+        self.inner.server().map(|s| s.to_string())
     }
 
     pub fn rooms(&self) -> Vec<Arc<Room>> {
@@ -1661,6 +1797,12 @@ impl Client {
             .into_iter()
             .map(|room| Arc::new(Room::new(room, self.utd_hook_manager.get().cloned())))
             .collect()
+    }
+
+    /// The total number of client-side computed unread notifications across all
+    /// joined rooms.
+    pub fn total_unread_notifications(&self) -> u64 {
+        self.inner.total_unread_notifications()
     }
 
     /// Mark all joined rooms as read by sending public, private and fully-read
@@ -1770,6 +1912,10 @@ impl Client {
         UserProfile::fetch(&self.inner.account(), user_id).await
     }
 
+    /// Creates a client specialised in fetching the content of push
+    /// notifications, using the default `NotificationClientTimeouts`.
+    ///
+    /// See `Client::notification_client_with_timeouts` to override them.
     pub async fn notification_client(
         self: Arc<Self>,
         process_setup: NotificationProcessSetup,
@@ -1779,6 +1925,22 @@ impl Client {
                 .await?,
             client: self.clone(),
         }))
+    }
+
+    /// Creates a client specialised in fetching the content of push
+    /// notifications, with custom `NotificationClientTimeouts`.
+    ///
+    /// The timeouts are fixed for the lifetime of the returned client.
+    pub async fn notification_client_with_timeouts(
+        self: Arc<Self>,
+        process_setup: NotificationProcessSetup,
+        timeouts: NotificationClientTimeouts,
+    ) -> Result<Arc<NotificationClient>, ClientError> {
+        let inner = MatrixNotificationClient::new((*self.inner).clone(), process_setup.into())
+            .await?
+            .with_timeouts(timeouts.into());
+
+        Ok(Arc::new(NotificationClient { inner, client: self.clone() }))
     }
 
     pub fn sync_service(&self) -> Arc<SyncServiceBuilder> {
@@ -1882,6 +2044,9 @@ impl Client {
         listener: Box<dyn IgnoredUsersListener>,
     ) -> Arc<TaskHandle> {
         let mut subscriber = self.inner.subscribe_to_ignore_user_list_changes();
+
+        listener.call(subscriber.next_now());
+
         Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
             while let Some(user_ids) = subscriber.next().await {
                 listener.call(user_ids);
@@ -2143,7 +2308,7 @@ impl Client {
                 .map_err(Error::from)?;
 
             // Clear all the room chunks. It's important to *not* call
-            // `EventCacheStore::clear_all_linked_chunks` here, because there might be live
+            // `EventCacheStore::clear_all_events` here, because there might be live
             // observers of the linked chunks, and that would cause some very bad state
             // mismatch.
             self.inner.event_cache().clear_all_rooms().await?;
@@ -2161,8 +2326,8 @@ impl Client {
 
                 for file_name in [
                     PathBuf::from(STATE_STORE_DATABASE_NAME),
-                    PathBuf::from(format!("{STATE_STORE_DATABASE_NAME}.wal")),
-                    PathBuf::from(format!("{STATE_STORE_DATABASE_NAME}.shm")),
+                    PathBuf::from(format!("{STATE_STORE_DATABASE_NAME}-wal")),
+                    PathBuf::from(format!("{STATE_STORE_DATABASE_NAME}-shm")),
                 ] {
                     let file_path = store_path.join(file_name);
                     if file_path.exists() {
@@ -2190,13 +2355,36 @@ impl Client {
     }
 
     /// Checks if the server supports the LiveKit RTC focus for placing calls.
+    ///
+    /// Transports are discovered through the authenticated
+    /// `GET /_matrix/client/v1/rtc/transports` endpoint (MSC4143). If the
+    /// homeserver doesn't implement it, the well-known `m.rtc_foci` are used as
+    /// a fallback, unless well-known discovery was disabled with
+    /// [`ClientBuilder::disable_well_known_lookup`] or
+    /// [`Client::disable_well_known_lookup`].
     pub async fn is_livekit_rtc_supported(&self) -> Result<bool, ClientError> {
-        Ok(self
+        let transports = self.inner.discover_rtc_transports().await?.unwrap_or_default();
+        Ok(transports.iter().any(|focus| matches!(focus, RtcTransport::LiveKit { .. })))
+    }
+
+    /// Checks if the server supports the Profiles sliding sync extension.
+    pub async fn is_profiles_sliding_sync_extension_supported(&self) -> Result<bool, ClientError> {
+        Ok(self.inner.is_global_profile_sync_enabled().await?)
+    }
+
+    /// Checks if the server supports user status.
+    pub async fn is_user_status_supported(&self) -> Result<bool, ClientError> {
+        let supports_profiles_sync_extension =
+            self.is_profiles_sliding_sync_extension_supported().await?;
+
+        let can_set_status_field = self
             .inner
-            .rtc_foci()
+            .homeserver_capabilities()
+            .extended_profile_fields()
             .await?
-            .iter()
-            .any(|focus| matches!(focus, RtcTransport::LiveKit(_))))
+            .can_set_field(&ProfileFieldName::Status);
+
+        Ok(supports_profiles_sync_extension && can_set_status_field)
     }
 
     /// Get information about the homeserver's advertised map tile server, if
@@ -2229,9 +2417,11 @@ impl Client {
         listener: Box<dyn MediaPreviewConfigListener>,
     ) -> Result<Arc<TaskHandle>, ClientError> {
         let (initial_value, stream) = self.inner.account().observe_media_preview_config().await?;
+
+        // Send the initial value to the listener.
+        listener.on_change(initial_value.map(|config| config.into()));
+
         Ok(Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
-            // Send the initial value to the listener.
-            listener.on_change(initial_value.map(|config| config.into()));
             // Listen for changes and notify the listener.
             pin_mut!(stream);
             while let Some(media_preview_config) = stream.next().await {
@@ -2339,20 +2529,119 @@ impl Client {
         }))))
     }
 
-    /// Whether to enable automatic backpagination under certain conditions
-    /// (e.g. when processing read receipts).
-    ///
-    /// This is an experimental feature, and might cause performance issues on
-    /// large accounts. Use with caution.
-    ///
-    /// This must be called after creating a client, but before subscribing to
-    /// the event cache (so, before spawning a sync service or a timeline).
-    pub fn enable_automatic_backpagination(&self) {
-        self.inner.event_cache().config_mut().experimental_auto_backpagination = true;
-    }
-
     pub fn homeserver_capabilities(&self) -> HomeserverCapabilities {
         HomeserverCapabilities::new(self.inner.homeserver_capabilities())
+    }
+
+    /// Enables or disables the content scanner feature using the provided
+    /// [`ContentScanner`] instance.
+    pub async fn set_content_scanner(&self, content_scanner: Option<Arc<ContentScanner>>) {
+        let media_fetcher = if let Some(content_scanner) = &content_scanner {
+            content_scanner.media_fetcher()
+        } else {
+            Arc::new(DefaultMediaFetcher)
+        };
+        self.inner.set_media_fetcher(media_fetcher).await;
+
+        *self.content_scanner.write().await = content_scanner;
+    }
+
+    /// Returns the currently used [`ContentScanner`] instance, if any.
+    pub async fn content_scanner(&self) -> Option<Arc<ContentScanner>> {
+        self.content_scanner.read().await.clone()
+    }
+
+    /// Olm-encrypt a to-device message and send it to a set of recipient
+    /// devices.
+    ///
+    /// # Arguments
+    ///
+    /// * `event_type` - The type of the to-device event to send.
+    ///
+    /// * `recipients` - The devices to send the message to, as a `user id ->
+    ///   device ids` map. The special device id `"*"` targets every device of
+    ///   that user we know about.
+    ///
+    /// * `content` - The content of the to-device event, as a JSON string,
+    ///   encrypted for and sent to every recipient.
+    ///
+    /// The returned value contains details of any recipients that did not
+    /// receive the message
+    pub async fn send_encrypted_to_device_message(
+        &self,
+        event_type: String,
+        recipients: HashMap<String, Vec<String>>,
+        content: String,
+    ) -> Result<SendToDeviceOutcome, ClientError> {
+        let mut ruma_recipients = BTreeMap::new();
+
+        for (user_id, device_ids) in recipients {
+            let user_id = UserId::parse(&user_id)?;
+            let device_ids = device_ids
+                .iter()
+                .map(|device_id| {
+                    DeviceIdOrAllDevices::try_from(device_id.as_str()).map_err(|e| {
+                        ClientError::Generic {
+                            msg: format!("Invalid device id `{device_id}`: {e}"),
+                            details: None,
+                        }
+                    })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+
+            ruma_recipients.insert(user_id, device_ids);
+        }
+
+        let content = Raw::<AnyToDeviceEventContent>::from_json_string(content)?;
+
+        let failures = self
+            .inner
+            .send_encrypted_to_device(
+                &ToDeviceEventType::from(event_type),
+                ruma_recipients,
+                content,
+            )
+            .await?;
+
+        Ok(SendToDeviceOutcome {
+            failures: failures
+                .into_iter()
+                .map(|(user_id, device_ids)| {
+                    (user_id.to_string(), device_ids.iter().map(ToString::to_string).collect())
+                })
+                .collect(),
+        })
+    }
+
+    /// Subscribe to the custom to-device messages received by this client.
+    ///
+    /// The listener is called with every to-device message whose type is one
+    /// of `event_types`, or with every custom to-device message if
+    /// `event_types` is empty. A message that was sent encrypted is delivered
+    /// decrypted, along with its encryption info.
+    ///
+    /// The to-device traffic the SDK uses for its own crypto machinery and the
+    /// messages it could not decrypt are never delivered.
+    ///
+    /// Use the returned [`TaskHandle`] to cancel the subscription.
+    pub fn subscribe_to_custom_to_device_messages(
+        &self,
+        event_types: Vec<String>,
+        listener: Box<dyn ToDeviceMessageListener>,
+    ) -> Arc<TaskHandle> {
+        let event_types = event_types.into_iter().map(ToDeviceEventType::from).collect();
+        let messages = self.inner.subscribe_to_custom_to_device_messages(event_types);
+
+        Arc::new(TaskHandle::new(get_runtime_handle().spawn(async move {
+            pin_mut!(messages);
+
+            while let Some(message) = messages.next().await {
+                match ToDeviceMessage::try_from(message) {
+                    Ok(message) => listener.on_message(message),
+                    Err(error) => warn!("Skipping malformed to-device message: {error}"),
+                }
+            }
+        })))
     }
 
     /// Subscribe to raw to-device events of arbitrary `type`, including custom
@@ -2402,7 +2691,6 @@ impl Client {
         // `crates/matrix-sdk/src/widget/matrix.rs`).
         let handler_handle = {
             let listener = listener.clone();
-            let filter = filter.clone();
             self.inner.add_event_handler(
                 move |raw: Raw<AnyToDeviceEvent>,
                       _encryption_info: Option<EncryptionInfo>,
@@ -2503,6 +2791,68 @@ pub struct ToDeviceRecipient {
     pub device_id: String,
 }
 
+/// The outcome of a [`Client::send_encrypted_to_device_message`] call.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct SendToDeviceOutcome {
+    /// The devices that did not receive the message, as a `user id -> device
+    /// ids` map.
+    ///
+    /// A device can end up in here because it is unknown to us, or because
+    /// encrypting the message for it failed. An empty map means every
+    /// recipient was served.
+    pub failures: HashMap<String, Vec<String>>,
+}
+
+/// A listener for incoming to-device messages, registered with
+/// [`Client::subscribe_to_custom_to_device_messages`].
+#[matrix_sdk_ffi_macros::export(callback_interface)]
+pub trait ToDeviceMessageListener: SyncOutsideWasm + SendOutsideWasm {
+    fn on_message(&self, message: ToDeviceMessage);
+}
+
+/// A custom to-device message received by the client.
+#[derive(Clone, uniffi::Record)]
+pub struct ToDeviceMessage {
+    /// The type of the message.
+    pub event_type: String,
+    /// The user id that *claims* to have sent this message.
+    ///
+    /// This is unauthenticated. For an encrypted message, trust
+    /// `encryption_info.sender_id` instead, which is cryptographically
+    /// attested.
+    pub sender_id: String,
+    /// The message content, as a JSON string.
+    pub content: String,
+    /// The encryption data of this message, or `None` if it arrived in the
+    /// clear.
+    pub encryption_info: Option<EventEncryptionInfo>,
+}
+
+impl TryFrom<SdkToDeviceMessage> for ToDeviceMessage {
+    type Error = serde_json::Error;
+
+    fn try_from(message: SdkToDeviceMessage) -> Result<Self, Self::Error> {
+        /// The subset of a to-device event that is exposed over FFI.
+        #[derive(Deserialize)]
+        struct ToDeviceMessageHelper<'a> {
+            #[serde(rename = "type")]
+            event_type: String,
+            sender: String,
+            #[serde(borrow)]
+            content: &'a RawJsonValue,
+        }
+
+        let helper: ToDeviceMessageHelper<'_> = serde_json::from_str(message.raw.json().get())?;
+
+        Ok(Self {
+            event_type: helper.event_type,
+            sender_id: helper.sender,
+            content: helper.content.get().to_owned(),
+            encryption_info: message.encryption_info.as_ref().map(Into::into),
+        })
+    }
+}
+
 /// Removes a registered to-device event handler from the client when dropped.
 struct ToDeviceEventHandlerGuard {
     client: MatrixClient,
@@ -2540,10 +2890,10 @@ fn forward_custom_to_device_event(
         }
     };
 
-    if let Some(allowed) = filter {
-        if !allowed.contains(&header.event_type) {
-            return;
-        }
+    if let Some(allowed) = filter
+        && !allowed.contains(&header.event_type)
+    {
+        return;
     }
 
     let content_json =
@@ -2783,6 +3133,15 @@ pub struct UserProfile {
     pub user_id: String,
     pub display_name: Option<String>,
     pub avatar_url: Option<String>,
+
+    /// The user's status (MSC4426 `m.status` profile field), if set.
+    pub status: Option<UserStatus>,
+
+    /// Set when the user is in a call (MSC4426 `m.call` profile field).
+    ///
+    /// `None` means the user is not in a call. `Some(UserCall { call_joined_ts:
+    /// None })` means the user is in a call but the join time wasn't recorded.
+    pub call: Option<UserCall>,
 }
 
 impl UserProfile {
@@ -2790,10 +3149,31 @@ impl UserProfile {
     /// API.
     pub(crate) async fn fetch(account: &Account, user_id: &UserId) -> Result<Self, ClientError> {
         let response = account.fetch_user_profile_of(user_id).await?;
-        let display_name = response.get_static::<DisplayName>()?;
-        let avatar_url = response.get_static::<AvatarUrl>()?.map(|url| url.to_string());
+        Self::from_profile(user_id, &response.data)
+    }
 
-        Ok(UserProfile { user_id: user_id.to_string(), display_name, avatar_url })
+    /// Build a [`UserProfile`] from a [`ruma::profile::UserProfile`].
+    fn from_profile(
+        user_id: &UserId,
+        profile: &ruma::profile::UserProfile,
+    ) -> Result<Self, ClientError> {
+        let display_name = Self::get_field::<DisplayName>(profile)?;
+        let avatar_url = Self::get_field::<AvatarUrl>(profile)?.map(|url| url.to_string());
+        let status = Self::get_field::<Status>(profile)?.map(UserStatus::from);
+        let call = Self::get_field::<Call>(profile)?.map(UserCall::from);
+
+        Ok(UserProfile { user_id: user_id.to_string(), display_name, avatar_url, status, call })
+    }
+
+    /// Reads a static profile field, tolerating an explicit `null` value by
+    /// treating it as absent while still surfacing genuine decode errors.
+    fn get_field<F: StaticProfileField>(
+        profile: &ruma::profile::UserProfile,
+    ) -> Result<Option<F::Value>, ClientError> {
+        match profile.get(F::NAME) {
+            Some(value) if !value.is_null() => Ok(Some(serde_json::from_value(value.clone())?)),
+            _ => Ok(None),
+        }
     }
 }
 
@@ -2803,7 +3183,40 @@ impl From<&search_users::v3::User> for UserProfile {
             user_id: value.user_id.to_string(),
             display_name: value.display_name.clone(),
             avatar_url: value.avatar_url.as_ref().map(|url| url.to_string()),
+            status: None,
+            call: None,
         }
+    }
+}
+
+#[matrix_sdk_ffi_macros::export]
+impl Client {
+    /// Set the current user's status (MSC4426 `m.status` profile field).
+    ///
+    /// Replaces any existing status. Use [`Self::clear_user_status`] to
+    /// remove it.
+    pub async fn set_user_status(&self, status: UserStatus) -> Result<(), ClientError> {
+        self.inner.account().set_status(status.emoji, status.text).await?;
+        Ok(())
+    }
+
+    /// Clear the current user's status (MSC4426).
+    ///
+    /// Deletes both `m.status` and `m.call` concurrently. Clearing `m.status`
+    /// alone would let `m.call` immediately reappear if the user were in a
+    /// call.
+    pub async fn clear_user_status(&self) -> Result<(), ClientError> {
+        let account = self.inner.account();
+        let (status_res, call_res) = tokio::join!(account.clear_status(), account.clear_call());
+        status_res?;
+        call_res?;
+        Ok(())
+    }
+
+    /// Enable or disable automatic mirroring of this device's MatrixRTC
+    /// participation into the MSC4426 `m.call` profile field.
+    pub fn enable_automatic_call_status(&self, enabled: bool) {
+        self.inner.enable_automatic_call_status(enabled);
     }
 }
 
@@ -3465,15 +3878,7 @@ impl TryFrom<JoinRule> for RumaJoinRule {
 }
 
 fn ruma_allow_rules_from_ffi(value: Vec<AllowRule>) -> Result<Vec<RumaAllowRule>, ClientError> {
-    let mut ret = Vec::with_capacity(value.len());
-    for rule in value {
-        let rule: Result<RumaAllowRule, ClientError> = rule.try_into();
-        match rule {
-            Ok(rule) => ret.push(rule),
-            Err(error) => return Err(error),
-        }
-    }
-    Ok(ret)
+    value.into_iter().map(TryInto::try_into).collect()
 }
 
 impl TryFrom<AllowRule> for RumaAllowRule {
@@ -3758,5 +4163,66 @@ mod tests {
         std::thread::spawn(move || drop(ffi_client))
             .join()
             .expect("Client::drop panicked on a non-tokio thread");
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    #[tokio::test]
+    async fn test_set_content_scanner_sets_media_fetcher() {
+        let client = crate::client_builder::ClientBuilder::new()
+            .homeserver_url("https://example.com".to_owned())
+            .build()
+            .await
+            .expect("build client");
+
+        // No content scanner set, the media fetcher is the default one
+        assert!(client.content_scanner().await.is_none());
+        assert_eq!(format!("{:?}", client.inner.get_media_fetcher().await), "DefaultMediaFetcher");
+
+        // We set a content scanner instance
+        client
+            .set_content_scanner(Some(crate::content_scanner::ContentScanner::new(
+                "https://scanner_url.com".to_owned(),
+            )))
+            .await;
+
+        // Content scanner is present, media fetcher is now based on it
+        assert!(client.content_scanner().await.is_some());
+        assert_eq!(
+            format!("{:?}", client.inner.get_media_fetcher().await),
+            "ContentScannerMediaFetcher"
+        );
+
+        // We remove the content scanner
+        client.set_content_scanner(None).await;
+
+        // We're back to the initial state: no content scanner, default fetcher
+        assert!(client.content_scanner().await.is_none());
+        assert_eq!(format!("{:?}", client.inner.get_media_fetcher().await), "DefaultMediaFetcher");
+    }
+
+    #[test]
+    fn test_from_profile_tolerates_null_fields() {
+        use ruma::profile::{ProfileFieldName, UserProfile as RumaUserProfile};
+        use serde_json::Value as JsonValue;
+
+        use super::UserProfile;
+
+        let user_id = ruma::user_id!("@user:example.com");
+
+        // A display name with avatar/status/call explicitly set as `null` JSON values.
+        let mut profile = RumaUserProfile::new();
+        profile
+            .set(ProfileFieldName::DisplayName.as_str().to_owned(), serde_json::json!("Example"));
+        profile.set(ProfileFieldName::AvatarUrl.as_str().to_owned(), JsonValue::Null);
+        profile.set(ProfileFieldName::Status.as_str().to_owned(), JsonValue::Null);
+        profile.set(ProfileFieldName::Call.as_str().to_owned(), JsonValue::Null);
+
+        let converted = UserProfile::from_profile(user_id, &profile)
+            .expect("null fields must not abort the profile conversion");
+
+        assert_eq!(converted.display_name.as_deref(), Some("Example"));
+        assert!(converted.avatar_url.is_none());
+        assert!(converted.status.is_none());
+        assert!(converted.call.is_none());
     }
 }

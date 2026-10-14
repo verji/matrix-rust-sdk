@@ -12,20 +12,22 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use matrix_sdk::{RumaApiError, bytes::BufMut, encryption::vodozemac::Curve25519PublicKey};
+use matrix_sdk::{RumaApiError, encryption::vodozemac::Curve25519PublicKey};
 use ruma::{
     api::{
-        Metadata, OutgoingRequest,
-        auth_scheme::{AccessTokenOptional, AuthScheme, SendAccessToken},
-        error::IntoHttpError,
-        path_builder::PathBuilder,
+        Metadata, OutgoingBodyJson, OutgoingRequest, auth_scheme::AccessTokenOptional,
+        error::IntoHttpError, path_builder::PathBuilder,
     },
     events::room::EncryptedFile,
     exports::http::Request,
     metadata,
 };
+use serde::Serialize;
 
-use crate::api::{encrypted_file_request_from, scan::MediaScanResponse};
+use crate::{
+    EncryptedFileRequest,
+    api::{encrypted_file_request_from, scan::MediaScanResponse},
+};
 
 metadata! {
     @for EncryptedMediaScanRequest,
@@ -56,30 +58,23 @@ impl EncryptedMediaScanRequest {
     }
 }
 
+#[doc(hidden)]
+#[derive(Serialize, OutgoingBodyJson)]
+#[serde(transparent)]
+pub struct RequestBody(EncryptedFileRequest);
+
 impl OutgoingRequest for EncryptedMediaScanRequest {
+    type Body = RequestBody;
     type EndpointError = RumaApiError;
     type IncomingResponse = MediaScanResponse;
 
-    fn try_into_http_request<T: Default + BufMut + AsRef<[u8]>>(
+    fn try_into_http_request_inner(
         self,
         _base_url: &str,
-        authentication_input: <Self::Authentication as AuthScheme>::Input<'_>,
         path_builder_input: <Self::PathBuilder as PathBuilder>::Input<'_>,
-    ) -> Result<Request<T>, IntoHttpError> {
+    ) -> Result<Request<Self::Body>, IntoHttpError> {
         let url = Self::make_endpoint_url(path_builder_input, &self.scanner_url, &[], "")?;
-
         let body = encrypted_file_request_from(self.public_key, &self.encrypted_file)?;
-        let body = ruma::serde::json_to_buf(&body)?;
-
-        let mut request = Request::builder().method(Self::METHOD).uri(url).body(body)?;
-
-        if let Some(access_token) = authentication_input.get_required_for_endpoint() {
-            Self::Authentication::add_authentication(
-                &mut request,
-                SendAccessToken::IfRequired(access_token),
-            )?
-        }
-
-        Ok(request)
+        Ok(Request::builder().method(Self::METHOD).uri(url).body(RequestBody(body))?)
     }
 }
