@@ -177,8 +177,9 @@ impl SyncServiceBuilder {
     /// delivers the types named in `required_state`, and the SDK's default list
     /// covers only types it knows about. A custom type left out of it never
     /// reaches the state store, so [`Room::state_events`] and
-    /// [`Room::subscribe_to_state_events`] see none of it regardless of what the
-    /// homeserver holds — the write succeeds and the read silently sees nothing.
+    /// [`Room::subscribe_to_state_events`] see none of it regardless of what
+    /// the homeserver holds — the write succeeds and the read silently sees
+    /// nothing.
     ///
     /// Use `"*"` as the state key to request every state key of a type, as the
     /// defaults do for `m.call.member` and `m.space.child`. That is what makes

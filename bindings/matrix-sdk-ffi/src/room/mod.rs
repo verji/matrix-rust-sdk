@@ -47,7 +47,7 @@ use ruma::{
     api::error::ErrorKind,
     assign,
     events::{
-        AnyMessageLikeEventContent, AnySyncStateEvent, AnySyncTimelineEvent, StateEventType,
+        AnyMessageLikeEventContent, AnySyncTimelineEvent, StateEventType,
         receipt::ReceiptThread as RumaReceiptThread,
         relation::RelationType as RumaRelationType,
         room::{
@@ -2555,10 +2555,9 @@ mod tests {
 
     use matrix_sdk::{
         deserialized_responses::TimelineEvent,
-        ruma::{event_id, events::AnySyncStateEvent, room_id},
+        ruma::{event_id, room_id},
         test_utils::mocks::MatrixMockServer,
     };
-    use matrix_sdk_test::JoinedRoomBuilder;
     use tempfile::tempdir;
     use wiremock::ResponseTemplate;
 

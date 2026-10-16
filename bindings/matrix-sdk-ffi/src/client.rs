@@ -64,7 +64,6 @@ use matrix_sdk::{
     sync::Notification,
     task_monitor::BackgroundTaskFailureReason,
 };
-use matrix_sdk_base::crypto::CollectStrategy;
 #[cfg(feature = "experimental-x509-identity-verification")]
 use matrix_sdk_base::crypto::x509::RawX509Signature;
 use matrix_sdk_common::{
