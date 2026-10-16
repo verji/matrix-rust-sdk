@@ -176,19 +176,19 @@ impl SyncServiceBuilder {
     /// **Required to read custom state event types at all.** Sliding Sync only
     /// delivers the types named in `required_state`, and the SDK's default list
     /// covers only types it knows about. A custom type left out of it never
-    /// reaches the state store, so [`Room::get_state_event_raw`] returns `None`
-    /// for it regardless of what the homeserver holds — the write succeeds and
-    /// the read silently sees nothing.
+    /// reaches the state store, so [`Room::state_events`] and
+    /// [`Room::subscribe_to_state_events`] see none of it regardless of what the
+    /// homeserver holds — the write succeeds and the read silently sees nothing.
     ///
     /// Use `"*"` as the state key to request every state key of a type, as the
     /// defaults do for `m.call.member` and `m.space.child`. That is what makes
-    /// [`Room::get_state_events_raw`] able to enumerate a custom type.
+    /// every state key of a custom type readable.
     ///
     /// Must be set before [`Self::finish`] — `required_state` is fixed when the
     /// Sliding Sync list is built.
     ///
-    /// [`Room::get_state_event_raw`]: crate::room::Room::get_state_event_raw
-    /// [`Room::get_state_events_raw`]: crate::room::Room::get_state_events_raw
+    /// [`Room::state_events`]: crate::room::Room::state_events
+    /// [`Room::subscribe_to_state_events`]: crate::room::Room::subscribe_to_state_events
     pub fn with_room_list_extra_required_state(
         self: Arc<Self>,
         entries: Vec<RequiredStateEntry>,
